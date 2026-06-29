@@ -62,9 +62,10 @@ for i in 0..N-1:
 ```text
 aiv_aicpu_bench/
   bench_main.asc          # Host driver + AIV Ascend C kernels
-  aicpu_poll_kernel.cc    # AICPU PollFlags / StampFlag kernels
-  aicpu_poll_kernel.h     # Host 和 AICPU 共享的参数结构
-  CMakeLists.txt          # 构建 AIV 可执行文件、AICPU so、AICPU json
+  aicpu_poll_kernel.cc    # CUST AICPU PollFlags / StampFlag kernels
+  aicpu_poll_kernel.h     # Host 和 AICPU 共享的 op 名称和状态码
+  aicpu_poll_proto.cpp    # CUST AICPU op proto 和 shape/type 推导注册
+  CMakeLists.txt          # 构建可执行文件、AICPU so、op proto so，并 staged custom_opp
   README.md
 ```
 
@@ -82,38 +83,70 @@ aiv_aicpu_bench/
 先加载 CANN 环境，例如：
 
 ```bash
-source /usr/local/Ascend/cann/set_env.sh
+source /usr/local/Ascend/cann-9.1.0/set_env.sh
 ```
 
-如果 CANN 不在默认路径，需要确保 `CANN_INSTALL_PATH` 或 `ASCEND_HOME_PATH` 指向实际安装目录。
+如果 CANN 不在这个路径，先把 `CANN_INSTALL_PATH` 或 `ASCEND_HOME_PATH` 指向实际安装目录。
 
-然后构建：
+A5/Ascend950 环境建议使用已经验证过的 `dav-3510 + --npu-arch`：
 
 ```bash
 cd /home/allen/workdir/zhn/aiv_aicpu_bench
-mkdir -p build
+rm -rf build
+mkdir build
 cd build
-cmake .. -DNPU_ARCH=dav-c220 -DASC_ARCH_FLAG=--cce-aicore-arch
+cmake .. -DCANN_INSTALL_PATH=${ASCEND_HOME_PATH} -DNPU_ARCH=dav-3510 -DASC_ARCH_FLAG=--npu-arch
 make -j
 ```
 
-`dav-c220` 是你这套 910B3 环境已验证可用的 AICore 架构值；如果当前 CANN 样例使用其他架构名，需要替换成实际支持的值。当前会话里没有 CANN 环境变量，所以我这里只能验证 AICPU C++ 部分，完整 `.asc` 编译需要在实际 Ascend/CANN 环境中执行。
+A2/910B 类环境如果 CANN 样例仍使用老参数，可以改回：
+
+```bash
+cmake .. -DCANN_INSTALL_PATH=${ASCEND_HOME_PATH} -DNPU_ARCH=dav-c220 -DASC_ARCH_FLAG=--cce-aicore-arch
+make -j
+```
+
+构建成功后，关键产物是：
+
+```text
+build/aiv_aicpu_bench
+build/libaiv_aicpu_poll_kernel.so
+build/libcust_opsproto_rt2.0.so
+build/custom_opp/vendors/cust/op_impl/cpu/config/cust_aicpu_kernel.json
+build/custom_opp/vendors/cust/op_impl/cpu/aicpu_kernel/impl/libaiv_aicpu_poll_kernel.so
+build/custom_opp/vendors/cust/op_proto/lib/linux/$(uname -m)/libcust_opsproto_rt2.0.so
+```
+
+当前版本走官方 CUST AICPU 路线：host 侧用 `aclopCompileAndExecute` 下发 `CUSTAICPUKernel`。不要再把 raw `aicpu_aiv_aicpu_bench.tar.gz` 写入 `$ASCEND_HOME_PATH/conf/ascend_package_load.ini`。
 
 ## 运行
 
-示例：
+运行 AICPU 相关 mode 前，先让 runtime 找到 staged custom OPP：
+
+```bash
+export ASCEND_CUSTOM_OPP_PATH=${PWD}/custom_opp/vendors/cust
+export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):${ASCEND_CUSTOM_OPP_PATH}/op_impl/cpu/aicpu_kernel/impl:${LD_LIBRARY_PATH}
+```
+
+最小冒烟建议先跑纯 AIV，再跑 AICPU noop：
+
+```bash
+./aiv_aicpu_bench --device=4 --warmup=0 --iters=1 --mode=aiv_snoop
+./aiv_aicpu_bench --device=4 --warmup=0 --iters=1 --mode=aicpu_noop
+```
+
+完整同步测试示例：
 
 ```bash
 ./aiv_aicpu_bench \
-  --device=0 \
+  --device=4 \
   --tasks=4 \
   --elements=262144 \
   --tile=1024 \
   --repeat=1 \
   --warmup=1 \
   --iters=5 \
-  --mode=all \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=all
 ```
 
 参数含义：
@@ -125,9 +158,9 @@ make -j
 - `--repeat`：每个阶段重复计算次数。调大可以更粗粒度地增加单阶段计算开销。
 - `--warmup`：预热轮数，不计入 summary。
 - `--iters`：正式统计轮数。
-- `--aicpu-json`：AICPU kernel JSON 路径，默认在 build 目录生成。
-- `--mode`：选择运行路径，支持 `all`、`shared`、`event_sync_pure`、`event_sync_with_flag_check`、`aicpu_noop`、`aicpu_read_bench`、`aicpu_read_chase`，默认 `all`。
+- `--mode`：选择运行路径，支持 `all`、`shared`、`event_sync_pure`、`event_sync_with_flag_check`、`aicpu_noop`、`aiv_snoop`、`aicpu_read_bench`、`aicpu_read_chase`，默认 `all`。
 - `--read-stride`：`aicpu_read_bench` 使用的读步长，单位是 `uint32_t` word，默认 1。
+- `--aicpu-json`：兼容旧命令的保留参数，CUST AICPU 路线下不会再使用它。
 
 建议先把 `--tasks=2`、`--elements` 设置小一点做冒烟；确认方案一能读到 flag 后，再调大 `--elements` 或 `--repeat`，把单阶段计算时间调到约 100us。
 
@@ -174,8 +207,7 @@ speedup_event_pure_over_shared
   --read-stride=1 \
   --warmup=1 \
   --iters=5 \
-  --mode=aicpu_read_bench \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=aicpu_read_bench
 ```
 
 关键输出：
@@ -201,8 +233,7 @@ speedup_event_pure_over_shared
   --repeat=1 \
   --warmup=0 \
   --iters=3 \
-  --mode=aicpu_read_chase \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=aicpu_read_chase
 ```
 
 关键输出：
@@ -262,34 +293,50 @@ The benchmark intentionally uses one AIV block so a stage flag means the whole s
 Set the CANN environment first, for example:
 
 ```bash
-source /usr/local/Ascend/cann/set_env.sh
+source /usr/local/Ascend/cann-9.1.0/set_env.sh
 ```
 
-Then build:
+For A5/Ascend950, use the verified `dav-3510 + --npu-arch` pair:
 
 ```bash
 cd /home/allen/workdir/zhn/aiv_aicpu_bench
-mkdir -p build
+rm -rf build
+mkdir build
 cd build
-cmake .. -DNPU_ARCH=dav-c220 -DASC_ARCH_FLAG=--cce-aicore-arch
+cmake .. -DCANN_INSTALL_PATH=${ASCEND_HOME_PATH} -DNPU_ARCH=dav-3510 -DASC_ARCH_FLAG=--npu-arch
 make -j
 ```
 
-For Ascend 910B3, use `dav-c220` with `--cce-aicore-arch`. Replace it if your CANN samples use another supported architecture value.
+The build stages the CUST AICPU custom OPP under `build/custom_opp/vendors/cust`.
 
 ## Run
 
+For modes that launch AICPU kernels, export the staged custom OPP first:
+
+```bash
+export ASCEND_CUSTOM_OPP_PATH=${PWD}/custom_opp/vendors/cust
+export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):${ASCEND_CUSTOM_OPP_PATH}/op_impl/cpu/aicpu_kernel/impl:${LD_LIBRARY_PATH}
+```
+
+Smoke test:
+
+```bash
+./aiv_aicpu_bench --device=4 --warmup=0 --iters=1 --mode=aiv_snoop
+./aiv_aicpu_bench --device=4 --warmup=0 --iters=1 --mode=aicpu_noop
+```
+
+Full run example:
+
 ```bash
 ./aiv_aicpu_bench \
-  --device=0 \
+  --device=4 \
   --tasks=4 \
   --elements=262144 \
   --tile=1024 \
   --repeat=1 \
   --warmup=1 \
   --iters=5 \
-  --mode=all \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=all
 ```
 
 Important output fields:

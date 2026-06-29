@@ -15,7 +15,7 @@ cd /home/allen/workdir/zhn/aiv_aicpu_bench
 加载 CANN 环境变量：
 
 ```bash
-source /usr/local/Ascend/cann/set_env.sh
+source /usr/local/Ascend/cann-9.1.0/set_env.sh
 ```
 
 作用：把 CANN 的编译器、头文件、库文件和运行时路径加载到当前 shell。后续 `cmake` 才能找到 Ascend C/ASC 包，`make` 才能找到 `acl/acl.h`、`kernel_operator.h` 和 `ascendcl`，运行程序时也才能找到 CANN 动态库。
@@ -31,7 +31,7 @@ ls /usr/local/Ascend
 也可以显式指定 CANN 路径：
 
 ```bash
-export CANN_INSTALL_PATH=/usr/local/Ascend/cann
+export CANN_INSTALL_PATH=/usr/local/Ascend/cann-9.1.0
 source ${CANN_INSTALL_PATH}/set_env.sh
 ```
 
@@ -66,10 +66,10 @@ cd build
 生成构建系统：
 
 ```bash
-cmake .. -DNPU_ARCH=dav-c220 -DASC_ARCH_FLAG=--cce-aicore-arch
+cmake .. -DCANN_INSTALL_PATH=${ASCEND_HOME_PATH} -DNPU_ARCH=dav-3510 -DASC_ARCH_FLAG=--npu-arch
 ```
 
-作用：让 CMake 检测当前 CANN/ASC 编译环境，生成 Makefile，并把 `dav-c220` 通过 `--cce-aicore-arch` 传给 Ascend C 编译器。你这套 910B3 环境已验证这组参数可完成构建。如果你的 CANN 样例使用其他参数名或架构名，可以改 `NPU_ARCH` 或 `ASC_ARCH_FLAG`。
+作用：让 CMake 检测当前 CANN/ASC 编译环境，生成 Makefile，并把 `dav-3510` 通过 `--npu-arch` 传给 Ascend C 编译器。这是 A5/Ascend950 环境上已经验证过的组合；A2/910B 类环境如果样例仍使用老参数，可以改回 `-DNPU_ARCH=dav-c220 -DASC_ARCH_FLAG=--cce-aicore-arch`。
 
 编译：
 
@@ -78,91 +78,26 @@ make -j
 ```
 
 
-### 2.1 安装 AICPU 自定义 kernel 包
+### 2.1 准备 CUST AICPU custom OPP
 
-`make -j` 现在会额外生成 AICPU package：
-
-```text
-build/aicpu_aiv_aicpu_bench.tar.gz
-```
-
-这个 tar 包内部包含：
+当前版本不再安装 raw AICPU package，也不再修改 `$ASCEND_HOME_PATH/conf/ascend_package_load.ini`。`make -j` 会在 build 目录生成 staged custom OPP：
 
 ```text
-aicpu_kernels_device/libaiv_aicpu_poll_kernel.so
+custom_opp/vendors/cust/op_impl/cpu/config/cust_aicpu_kernel.json
+custom_opp/vendors/cust/op_impl/cpu/aicpu_kernel/impl/libaiv_aicpu_poll_kernel.so
+custom_opp/vendors/cust/op_proto/lib/linux/$(uname -m)/libcust_opsproto_rt2.0.so
 ```
 
-需要把该包和 JSON 安装到 CANN 自定义 AICPU 目录，并把包登记到 `ascend_package_load.ini`：
+运行 AICPU mode 前，在当前 build 目录执行：
 
 ```bash
-make install_aicpu_package
+export ASCEND_CUSTOM_OPP_PATH=${PWD}/custom_opp/vendors/cust
+export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):${ASCEND_CUSTOM_OPP_PATH}/op_impl/cpu/aicpu_kernel/impl:${LD_LIBRARY_PATH}
 ```
 
-作用：把文件安装到：
+作用：让 `aclopCompileAndExecute` 能找到 `CUSTAICPUKernel` 的 op proto、kernel json 和 AICPU kernel so。
 
-```text
-$ASCEND_HOME_PATH/opp/vendors/cust/aicpu/kernel/aicpu_aiv_aicpu_bench.tar.gz
-$ASCEND_HOME_PATH/opp/vendors/cust/aicpu/config/libaiv_aicpu_poll_kernel.json
-```
-
-并向下面的文件追加白名单项：
-
-```text
-$ASCEND_HOME_PATH/conf/ascend_package_load.ini
-```
-
-追加内容类似：
-
-```text
-name:aicpu_aiv_aicpu_bench.tar.gz
-install_path:2
-optional:true
-package_path:opp/vendors/cust/aicpu/kernel
-load_as_per_soc:false
-```
-
-如果 CANN 安装在 `/usr/local/Ascend/cann-9.0.0` 且当前用户没有写权限，需要用 root 执行，或用 `sudo`：
-
-```bash
-sudo -E make install_aicpu_package
-```
-
-如果运行时日志仍提示包验签失败，需要按 HCOMM 自定义算子文档关闭自定义 AICPU 包验签。以 device 0 为例：
-
-```bash
-npu-smi set -t custom-op-secverify-enable -i 0 -d 1
-npu-smi set -t custom-op-secverify-mode -i 0 -d 0
-```
-
-注意：关闭验签有安全风险，只建议在受控验证环境使用。
-
-安装后，建议使用安装后的 JSON 路径运行：
-
-```bash
---aicpu-json=$ASCEND_HOME_PATH/opp/vendors/cust/aicpu/config/libaiv_aicpu_poll_kernel.json
-```
-
-作用：并行编译 host 程序、AIV `.asc` kernel 和 AICPU kernel 动态库，并生成 AICPU kernel 描述 JSON。`-j` 表示使用多核并行编译。
-
-构建成功后，查看 build 目录产物：
-
-```bash
-ls
-```
-
-作用：确认关键产物是否生成。重点看：
-
-```text
-aiv_aicpu_bench
-libaiv_aicpu_poll_kernel.so
-libaiv_aicpu_poll_kernel.json
-```
-
-含义：
-
-- `aiv_aicpu_bench`：最终运行的 benchmark 可执行文件。
-- `libaiv_aicpu_poll_kernel.so`：AICPU 侧 `PollFlags`、`StampOnly`、`StampFlag` kernel 动态库。
-- `libaiv_aicpu_poll_kernel.json`：AICPU kernel 描述文件，运行时通过 `--aicpu-json` 传给程序加载。
+注意：不要再执行旧流程里的 raw package 安装。如果环境里残留了 `aicpu_aiv_aicpu_bench.tar.gz` 的 `ascend_package_load.ini` 条目，先删掉该条目；之前已经观察到残留 raw package 会让 `aclrtSetDevice` 直接返回 `507033`，甚至影响纯 `aiv_snoop`。
 
 ## 3. 先做最小冒烟
 
@@ -177,11 +112,10 @@ libaiv_aicpu_poll_kernel.json
   --repeat=1 \
   --warmup=1 \
   --iters=3 \
-  --mode=all \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=all
 ```
 
-作用：在 device 0 上跑一个很小规模的测试。`tasks=2` 表示 2 个阶段；`elements=4096` 表示每阶段计算量很小；`warmup=1` 预热 1 轮；`iters=3` 正式统计 3 轮；`--mode=all` 表示三条路径都跑；`--aicpu-json` 指向当前 build 目录生成的 AICPU kernel JSON。
+作用：在 device 0 上跑一个很小规模的测试。`tasks=2` 表示 2 个阶段；`elements=4096` 表示每阶段计算量很小；`warmup=1` 预热 1 轮；`iters=3` 正式统计 3 轮；`--mode=all` 表示三条路径都跑。
 
 重点观察每轮：
 
@@ -206,8 +140,7 @@ event_sync_with_flag_check status=0
   --repeat=1 \
   --warmup=1 \
   --iters=3 \
-  --mode=event_sync_pure \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=event_sync_pure
 ```
 
 作用：只跑 `event_sync_pure`，不启动 `shared` 的 AICPU 轮询 kernel。这个命令用于判断基础 AIV kernel、event wait 和 AICPU `StampOnly` launch 是否能跑通。
@@ -223,8 +156,7 @@ event_sync_with_flag_check status=0
   --repeat=1 \
   --warmup=1 \
   --iters=3 \
-  --mode=aicpu_noop \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --mode=aicpu_noop
 ```
 
 作用：只启动 AICPU `Noop` kernel，不启动 AIV kernel，也不访问 device memory。若这个模式仍失败，说明问题在 AICPU 自定义 kernel 的加载/launch/打包路径；若这个模式成功而 `event_sync_pure` 失败，说明问题更可能在 AICPU kernel 访问 device memory。
@@ -243,8 +175,7 @@ event_sync_with_flag_check status=0
   --tile=1024 \
   --repeat=1 \
   --warmup=2 \
-  --iters=10 \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --iters=10
 ```
 
 作用：把阶段数提高到 4，把每阶段元素数提高到 65536，并正式统计 10 轮。这个规模用于观察三条路径是否稳定、耗时是否开始拉开。
@@ -259,8 +190,7 @@ event_sync_with_flag_check status=0
   --tile=1024 \
   --repeat=1 \
   --warmup=2 \
-  --iters=10 \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --iters=10
 ```
 
 作用：继续增大每阶段 AIV 计算量，目标是让单阶段计算时间接近真实关注的 100us 量级。这样更接近“计算期间 AICPU 能否提前感知中间结果”的目标场景。
@@ -376,8 +306,7 @@ speedup_event_pure_over_shared = event_sync_pure_avg_us / shared_avg_us
   --repeat=1 \
   --warmup=5 \
   --iters=30 \
-  --timeout-ms=5000 \
-  --aicpu-json=./libaiv_aicpu_poll_kernel.json
+  --timeout-ms=5000
 ```
 
 作用：在冒烟通过后，用较多预热和统计轮数跑一组相对正式的数据。`--timeout-ms=5000` 表示方案一 AICPU 轮询最多等 5000ms，避免共享 flag 不可见时无限卡住。

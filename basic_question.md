@@ -1,5 +1,7 @@
 # Basic Questions
 
+> 注意：本文前半部分记录的是旧 raw `AICPUKernel` 路线的问题定位过程。当前代码已改为官方 `CUSTAICPUKernel + aclopCompileAndExecute` 路线，运行时使用 `ASCEND_CUSTOM_OPP_PATH` 指向 `build/custom_opp/vendors/cust`，不再安装 raw AICPU package。
+
 ## so 是什么
 
 **问题：** 而是 AICPU 执行侧打开这个 so 失败，这个so是什么
