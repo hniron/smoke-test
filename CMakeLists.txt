@@ -79,6 +79,26 @@ message(STATUS "CANN include dirs: ${CANN_INCLUDE_DIRS}")
 message(STATUS "SIMT include dirs: ${SIMT_INCLUDE_DIRS}")
 message(STATUS "CANN lib dirs: ${CANN_LIB_DIRS}")
 
+find_library(ASCEND_RUNTIME_LIB
+    NAMES runtime
+    PATHS ${CANN_LIB_DIRS}
+    NO_DEFAULT_PATH
+)
+find_library(PROFAPI_LIB
+    NAMES profapi
+    PATHS ${CANN_LIB_DIRS}
+    NO_DEFAULT_PATH
+)
+set(ASCEND_HOST_LAUNCH_LIBS "")
+foreach(_host_launch_lib IN ITEMS ASCEND_RUNTIME_LIB PROFAPI_LIB)
+    if(${_host_launch_lib})
+        list(APPEND ASCEND_HOST_LAUNCH_LIBS "${${_host_launch_lib}}")
+    else()
+        message(WARNING "${_host_launch_lib} was not found under ${CANN_LIB_DIRS}")
+    endif()
+endforeach()
+message(STATUS "Ascend host launch libs: ${ASCEND_HOST_LAUNCH_LIBS}")
+
 function(configure_visibility_target target_name)
     target_include_directories(${target_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -90,6 +110,7 @@ function(configure_visibility_target target_name)
     target_link_libraries(${target_name} PRIVATE
         ascendcl
         acl_op_compiler
+        ${ASCEND_HOST_LAUNCH_LIBS}
     )
     target_compile_options(${target_name} PRIVATE
         $<$<COMPILE_LANGUAGE:ASC>:${ASC_ARCH_FLAG}=${NPU_ARCH}>
