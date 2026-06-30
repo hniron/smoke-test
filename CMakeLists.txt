@@ -97,21 +97,21 @@ function(configure_visibility_target target_name)
 endfunction()
 
 add_executable(aiv_flag_visibility
-    bench_main.asc
+    bench_main.cpp
     aiv_flags.asc
 )
 target_compile_definitions(aiv_flag_visibility PRIVATE ENABLE_AIV_PRODUCER)
 configure_visibility_target(aiv_flag_visibility)
 
 add_executable(simt_store_visibility
-    bench_main.asc
+    bench_main.cpp
     simt_store_flags.asc
 )
 target_compile_definitions(simt_store_visibility PRIVATE ENABLE_SIMT_STORE_PRODUCER)
 configure_visibility_target(simt_store_visibility)
 
 add_executable(simt_atomic_visibility
-    bench_main.asc
+    bench_main.cpp
     simt_atomic_flags.asc
 )
 target_compile_definitions(simt_atomic_visibility PRIVATE ENABLE_SIMT_ATOMIC_PRODUCER)
