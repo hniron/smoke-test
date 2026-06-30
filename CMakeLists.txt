@@ -109,7 +109,7 @@ if(ENABLE_SIMT)
             string(APPEND _SIMT_FLAGS " -idirafter ${_simt_include_dir}")
         endif()
     endforeach()
-    set_source_files_properties(simt_flags.asc PROPERTIES COMPILE_FLAGS "${_SIMT_FLAGS}")
+    set_source_files_properties(bench_main.asc simt_flags.asc PROPERTIES COMPILE_FLAGS "${_SIMT_FLAGS}")
 endif()
 
 set(CANN_LINUX_PATHS "")
