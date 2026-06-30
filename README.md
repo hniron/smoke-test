@@ -39,15 +39,21 @@ cmake --build build-a5 -j
 
 ## 运行
 
-运行前把 custom OPP 和动态库路径指到本工程构建出来的位置：
+每次测试前，建议在当前 shell 里统一准备运行环境。`source set_env.sh` 之后显式补上 Python site-packages，避免 GE/TBE 初始化 custom AICPU op 时找不到 `numpy`：
 
 ```bash
 cd /home/z00888267/simt_test/smoke-test
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
 
+export PATH=/usr/local/python3.11.10/bin:$PATH
+unset PYTHONHOME
+export PYTHONPATH=/usr/local/python3.11.10/lib/python3.11/site-packages:$PYTHONPATH
+
 export ASCEND_CUSTOM_OPP_PATH=$PWD/build-a5/custom_opp/vendors/cust
 export LD_LIBRARY_PATH=$ASCEND_CUSTOM_OPP_PATH/op_proto/lib/linux/$(uname -m):$ASCEND_CUSTOM_OPP_PATH/op_impl/cpu/aicpu_kernel/impl:$LD_LIBRARY_PATH
 ```
+
+同一个 shell 里只需要设置一次；重新登录、重新开终端或重新开 shell 后需要重新执行这一段。
 
 先跑 AICPU 自定义算子冒烟测试：
 
