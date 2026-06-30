@@ -16,39 +16,70 @@
 在 A5/CANN 9.x 环境中：
 
 ```bash
-cd /home/allen/workdir/zhn/simt_test
-cmake -S . -B build \
-  -DCANN_INSTALL_PATH=/usr/local/Ascend/cann9.1.0 \
+cd /home/z00888267/simt_test/smoke-test
+source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+
+rm -rf build-a5
+cmake -S . -B build-a5 \
+  -DCANN_INSTALL_PATH=/usr/local/Ascend/cann-9.1.T560 \
   -DNPU_ARCH=dav-3510 \
   -DASC_ARCH_FLAG=--npu-arch
-cmake --build build -j
+cmake --build build-a5 -j
 ```
 
 如果你的环境里 `CANN_INSTALL_PATH` 或 `ASCEND_HOME_PATH` 已经指向 CANN 根目录，可以省略 `-DCANN_INSTALL_PATH=...`。
 
+当前工程会生成三个独立可执行文件：
+
+- `aiv_flag_visibility`：只包含 AIV producer。
+- `simt_store_visibility`：只包含 SIMT 普通 store producer。
+- `simt_atomic_visibility`：只包含 SIMT atomic exchange producer。
+
+不要使用旧的 `simt_flag_visibility` 单体方案；A5 当前链接器不允许一个可执行里混用 AIV launch 和 SIMT launch。
+
 ## 运行
 
-运行前把 custom OPP 指到本工程构建出来的位置：
+运行前把 custom OPP 和动态库路径指到本工程构建出来的位置：
 
 ```bash
-cd /home/allen/workdir/zhn/simt_test
-export ASCEND_CUSTOM_OPP_PATH=$PWD/build/custom_opp/vendors/cust
-./build/simt_flag_visibility --mode=all --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
+cd /home/z00888267/simt_test/smoke-test
+source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+
+export ASCEND_CUSTOM_OPP_PATH=$PWD/build-a5/custom_opp/vendors/cust
+export LD_LIBRARY_PATH=$ASCEND_CUSTOM_OPP_PATH/op_proto/lib/linux/$(uname -m):$ASCEND_CUSTOM_OPP_PATH/op_impl/cpu/aicpu_kernel/impl:$LD_LIBRARY_PATH
 ```
 
-单独跑某个 producer：
+先跑 AICPU 自定义算子冒烟测试：
 
 ```bash
-./build/simt_flag_visibility --mode=aiv_store
-./build/simt_flag_visibility --mode=simt_store
-./build/simt_flag_visibility --mode=simt_atomic
-./build/simt_flag_visibility --mode=aicpu_noop
+./build-a5/aiv_flag_visibility --device=0 --mode=aicpu_noop --warmup=0 --iters=1
+```
+
+如果 `aicpu_noop` 成功，再分别跑三组 producer：
+
+```bash
+./build-a5/aiv_flag_visibility --device=0 --mode=aiv_store --tasks=64 --iters=20 --warmup=3 --delay-iters=0
+./build-a5/simt_store_visibility --device=0 --mode=simt_store --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
+./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
 ```
 
 如果 `--delay-iters=0` 下多个 flag 太快，AICPU interval 分辨不出来，可以临时加大：
 
 ```bash
-./build/simt_flag_visibility --mode=all --tasks=64 --delay-iters=1000
+./build-a5/aiv_flag_visibility --device=0 --mode=aiv_store --tasks=64 --delay-iters=1000
+./build-a5/simt_store_visibility --device=0 --mode=simt_store --tasks=64 --delay-iters=1000 --simt-threads=32
+./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic --tasks=64 --delay-iters=1000 --simt-threads=32
 ```
 
 这只用于拉开 flag 写入间隔，不代表真实业务计算阶段。
+
+## 指标解读
+
+每组重点看：
+
+- `status=0`：AICPU poll 正常完成。
+- `aicpu_seen_interval_avg_us`：AICPU 看到相邻 flag 的平均间隔，是目标 A 的主要比较指标。
+- `aicpu_seen_interval_min_us` / `aicpu_seen_interval_max_us`：相邻 flag 可见间隔的范围。
+- `poll_iters_avg`：AICPU 轮询次数，辅助判断可见性差异。
+
+`host_total_us` 包含 kernel launch、stream synchronize 等 host 侧开销，只作为辅助参考。

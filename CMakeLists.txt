@@ -79,29 +79,44 @@ message(STATUS "CANN include dirs: ${CANN_INCLUDE_DIRS}")
 message(STATUS "SIMT include dirs: ${SIMT_INCLUDE_DIRS}")
 message(STATUS "CANN lib dirs: ${CANN_LIB_DIRS}")
 
-add_executable(simt_flag_visibility
+function(configure_visibility_target target_name)
+    target_include_directories(${target_name} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CANN_INCLUDE_DIRS}
+    )
+    target_link_directories(${target_name} PRIVATE
+        ${CANN_LIB_DIRS}
+    )
+    target_link_libraries(${target_name} PRIVATE
+        ascendcl
+        acl_op_compiler
+    )
+    target_compile_options(${target_name} PRIVATE
+        $<$<COMPILE_LANGUAGE:ASC>:${ASC_ARCH_FLAG}=${NPU_ARCH}>
+    )
+endfunction()
+
+add_executable(aiv_flag_visibility
     bench_main.asc
     aiv_flags.asc
-    simt_flags.asc
 )
+target_compile_definitions(aiv_flag_visibility PRIVATE ENABLE_AIV_PRODUCER)
+configure_visibility_target(aiv_flag_visibility)
 
-target_include_directories(simt_flag_visibility PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CANN_INCLUDE_DIRS}
+add_executable(simt_store_visibility
+    bench_main.asc
+    simt_store_flags.asc
 )
+target_compile_definitions(simt_store_visibility PRIVATE ENABLE_SIMT_STORE_PRODUCER)
+configure_visibility_target(simt_store_visibility)
 
-target_link_directories(simt_flag_visibility PRIVATE
-    ${CANN_LIB_DIRS}
+add_executable(simt_atomic_visibility
+    bench_main.asc
+    simt_atomic_flags.asc
 )
+target_compile_definitions(simt_atomic_visibility PRIVATE ENABLE_SIMT_ATOMIC_PRODUCER)
+configure_visibility_target(simt_atomic_visibility)
 
-target_link_libraries(simt_flag_visibility PRIVATE
-    ascendcl
-    acl_op_compiler
-)
-
-target_compile_options(simt_flag_visibility PRIVATE
-    $<$<COMPILE_LANGUAGE:ASC>:${ASC_ARCH_FLAG}=${NPU_ARCH}>
-)
 if(ENABLE_SIMT)
     set(_SIMT_FLAGS "--enable-simt")
     foreach(_simt_include_dir IN LISTS SIMT_INCLUDE_DIRS)
@@ -109,7 +124,7 @@ if(ENABLE_SIMT)
             string(APPEND _SIMT_FLAGS " -idirafter ${_simt_include_dir}")
         endif()
     endforeach()
-    set_source_files_properties(simt_flags.asc PROPERTIES COMPILE_FLAGS "${_SIMT_FLAGS}")
+    set_source_files_properties(simt_store_flags.asc simt_atomic_flags.asc PROPERTIES COMPILE_FLAGS "${_SIMT_FLAGS}")
 endif()
 
 set(CANN_LINUX_PATHS "")
