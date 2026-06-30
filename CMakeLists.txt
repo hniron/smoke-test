@@ -30,33 +30,54 @@ set(ASC_ARCH_FLAG "--npu-arch" CACHE STRING "Ascend C arch option, for example -
 set(AICPU_VENDOR "cust" CACHE STRING "CANN custom OPP vendor name")
 option(ENABLE_SIMT "Compile ASC sources with --enable-simt" ON)
 
-set(CANN_INCLUDE_DIRS
-    "${CANN_INSTALL_PATH}/include"
-    "${CANN_INSTALL_PATH}/aarch64-linux/include"
-    "${CANN_INSTALL_PATH}/compiler/ascendc/include"
-    "${CANN_INSTALL_PATH}/compiler/ascendc/include/basic_api"
-    "${CANN_INSTALL_PATH}/compiler/ascendc/include/basic_api/impl"
-)
-set(SIMT_INCLUDE_DIRS
-    "${CANN_INSTALL_PATH}/aarch64-linux/asc/include"
-    "${CANN_INSTALL_PATH}/aarch64-linux/asc"
-)
-set(CANN_LIB_DIRS
-    "${CANN_INSTALL_PATH}/lib64"
-    "${CANN_INSTALL_PATH}/aarch64-linux/lib64"
-)
+function(append_existing out_var)
+    foreach(_dir ${ARGN})
+        if(EXISTS "${_dir}")
+            list(APPEND ${out_var} "${_dir}")
+        endif()
+    endforeach()
+    set(${out_var} "${${out_var}}" PARENT_SCOPE)
+endfunction()
+
+set(CANN_ROOT_CANDIDATES "${CANN_INSTALL_PATH}")
 if(DEFINED ASCEND_CANN_PACKAGE_LINUX_PATH)
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/include")
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include")
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include/basic_api")
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include/basic_api/impl")
-    list(APPEND SIMT_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include")
-    list(APPEND SIMT_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc")
-    list(APPEND CANN_LIB_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/lib64")
+    list(APPEND CANN_ROOT_CANDIDATES "${ASCEND_CANN_PACKAGE_LINUX_PATH}")
+    get_filename_component(_CANN_ROOT_FROM_LINUX "${ASCEND_CANN_PACKAGE_LINUX_PATH}" DIRECTORY)
+    list(APPEND CANN_ROOT_CANDIDATES "${_CANN_ROOT_FROM_LINUX}")
 endif()
+list(REMOVE_DUPLICATES CANN_ROOT_CANDIDATES)
+
+set(CANN_INCLUDE_DIRS "")
+set(SIMT_INCLUDE_DIRS "")
+set(CANN_LIB_DIRS "")
+foreach(_cann_root IN LISTS CANN_ROOT_CANDIDATES)
+    append_existing(CANN_INCLUDE_DIRS
+        "${_cann_root}/include"
+        "${_cann_root}/aarch64-linux/include"
+        "${_cann_root}/compiler/ascendc/include"
+        "${_cann_root}/compiler/ascendc/include/basic_api"
+        "${_cann_root}/compiler/ascendc/include/basic_api/impl"
+        "${_cann_root}/compiler/asc/include"
+        "${_cann_root}/compiler/asc/impl/basic_api"
+        "${_cann_root}/tools/tikcpp/tikcfw/interface"
+    )
+    append_existing(SIMT_INCLUDE_DIRS
+        "${_cann_root}/aarch64-linux/asc/include"
+        "${_cann_root}/aarch64-linux/asc"
+        "${_cann_root}/asc/include"
+        "${_cann_root}/asc"
+    )
+    append_existing(CANN_LIB_DIRS
+        "${_cann_root}/lib64"
+        "${_cann_root}/aarch64-linux/lib64"
+    )
+endforeach()
 list(REMOVE_DUPLICATES CANN_INCLUDE_DIRS)
 list(REMOVE_DUPLICATES SIMT_INCLUDE_DIRS)
 list(REMOVE_DUPLICATES CANN_LIB_DIRS)
+message(STATUS "CANN include dirs: ${CANN_INCLUDE_DIRS}")
+message(STATUS "SIMT include dirs: ${SIMT_INCLUDE_DIRS}")
+message(STATUS "CANN lib dirs: ${CANN_LIB_DIRS}")
 
 add_executable(simt_flag_visibility
     bench_main.asc
