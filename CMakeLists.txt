@@ -33,8 +33,12 @@ option(ENABLE_SIMT "Compile ASC sources with --enable-simt" ON)
 set(CANN_INCLUDE_DIRS
     "${CANN_INSTALL_PATH}/include"
     "${CANN_INSTALL_PATH}/aarch64-linux/include"
+    "${CANN_INSTALL_PATH}/compiler/ascendc/include"
+    "${CANN_INSTALL_PATH}/compiler/ascendc/include/basic_api"
+    "${CANN_INSTALL_PATH}/compiler/ascendc/include/basic_api/impl"
     "${CANN_INSTALL_PATH}/aarch64-linux/asc/include"
     "${CANN_INSTALL_PATH}/aarch64-linux/asc"
+    "${CANN_INSTALL_PATH}/aarch64-linux/asc/impl"
 )
 set(CANN_LIB_DIRS
     "${CANN_INSTALL_PATH}/lib64"
@@ -42,8 +46,12 @@ set(CANN_LIB_DIRS
 )
 if(DEFINED ASCEND_CANN_PACKAGE_LINUX_PATH)
     list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/include")
+    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include")
+    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include/basic_api")
+    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include/basic_api/impl")
     list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include")
     list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc")
+    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/impl")
     list(APPEND CANN_LIB_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/lib64")
 endif()
 list(REMOVE_DUPLICATES CANN_INCLUDE_DIRS)
