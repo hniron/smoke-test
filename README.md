@@ -11,6 +11,18 @@
 - 默认 `--delay-iters=0`，producer 不做真实阶段性计算，重点看 flag 写入后对 AICPU 的可见性。
 - 主要看 `aicpu_seen_interval_avg_us/min/max` 和 `poll_iters_avg`。`host_total_us` 会包含 launch 和 stream sync 等开销，只作为辅助指标。
 
+## 三种写 flag 方式
+
+三种模式的高层语义一致：都把 `task + 1` 写到 GM flag 数组的 `flags[task * kFlagPadCount]`，AICPU consumer 轮询的也是这个地址。因此它们在 AICPU 观察侧是可比的。
+
+底层写内存方式不同：
+
+- `aiv_store`：AIV/AscendC 写法。先在 UB local tensor 里准备数据，再通过 `DataCopy(flagGm_[task * kFlagPadCount], local, kFlagPadCount)` 从 UB 写到 GM。当前 `kFlagPadCount = 8`，所以每个 flag slot 实际写 8 个 `int32_t`，第 0 个是 flag，后面是 padding。
+- `simt_store`：SIMT 普通 GM store。一个 SIMT thread 把 `flags` 转成 `volatile uint32_t *`，然后执行 `out[task * kFlagPadCount] = task + 1U`。它不经过 UB tensor，也不使用 atomic，一次只写 flag 这个 4 字节位置。`volatile` 主要用于避免编译器优化掉这个内存写。
+- `simt_atomic`：SIMT atomic exchange。一个 SIMT thread 对同一个 GM flag 地址执行 `asc_atomic_exch(&flags[task * kFlagPadCount], task + 1U)`。它通过 CANN SIMT atomic API 写入，语义比普通 store 更强，通常也更重。当前实验只有一个 writer 写 flag，所以 atomic 的多 writer 原子性不是必须条件，更适合用来观察 atomic 写路径本身的可见性代价。
+
+因此，当前实验比较的是三种实际写法的可见性：`aiv_store` 是 UB + `DataCopy` 到 GM，`simt_store` 是 SIMT 直接普通 GM store，`simt_atomic` 是 SIMT atomic exchange 到 GM。如果后续希望写入粒度也完全对齐，可以把 AIV 改成只写 1 个 `int32_t`，或把 SIMT store 改成写满 `kFlagPadCount` 个 `uint32_t`。
+
 ## 构建
 
 在 A5/CANN 9.x 环境中：
