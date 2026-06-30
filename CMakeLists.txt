@@ -118,7 +118,7 @@ function(configure_visibility_target target_name)
 endfunction()
 
 add_executable(aiv_flag_visibility
-    bench_main.cpp
+    bench_main.asc
     aiv_flags.asc
 )
 target_compile_definitions(aiv_flag_visibility PRIVATE ENABLE_AIV_PRODUCER)
