@@ -36,9 +36,10 @@ set(CANN_INCLUDE_DIRS
     "${CANN_INSTALL_PATH}/compiler/ascendc/include"
     "${CANN_INSTALL_PATH}/compiler/ascendc/include/basic_api"
     "${CANN_INSTALL_PATH}/compiler/ascendc/include/basic_api/impl"
+)
+set(SIMT_INCLUDE_DIRS
     "${CANN_INSTALL_PATH}/aarch64-linux/asc/include"
     "${CANN_INSTALL_PATH}/aarch64-linux/asc"
-    "${CANN_INSTALL_PATH}/aarch64-linux/asc/impl"
 )
 set(CANN_LIB_DIRS
     "${CANN_INSTALL_PATH}/lib64"
@@ -49,12 +50,12 @@ if(DEFINED ASCEND_CANN_PACKAGE_LINUX_PATH)
     list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include")
     list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include/basic_api")
     list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/compiler/ascendc/include/basic_api/impl")
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include")
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc")
-    list(APPEND CANN_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/impl")
+    list(APPEND SIMT_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc/include")
+    list(APPEND SIMT_INCLUDE_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/asc")
     list(APPEND CANN_LIB_DIRS "${ASCEND_CANN_PACKAGE_LINUX_PATH}/lib64")
 endif()
 list(REMOVE_DUPLICATES CANN_INCLUDE_DIRS)
+list(REMOVE_DUPLICATES SIMT_INCLUDE_DIRS)
 list(REMOVE_DUPLICATES CANN_LIB_DIRS)
 
 add_executable(simt_flag_visibility
@@ -82,6 +83,13 @@ if(ENABLE_SIMT)
     target_compile_options(simt_flag_visibility PRIVATE
         $<$<COMPILE_LANGUAGE:ASC>:--enable-simt>
     )
+    foreach(_simt_include_dir IN LISTS SIMT_INCLUDE_DIRS)
+        if(EXISTS "${_simt_include_dir}")
+            target_compile_options(simt_flag_visibility PRIVATE
+                "$<$<COMPILE_LANGUAGE:ASC>:SHELL:-idirafter ${_simt_include_dir}>"
+            )
+        endif()
+    endforeach()
 endif()
 
 set(CANN_LINUX_PATHS "")
