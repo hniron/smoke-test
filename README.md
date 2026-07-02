@@ -4,7 +4,7 @@
 
 ## 实验边界
 
-- AICPU consumer 固定为 `AivAicpuPollFlags`，它 volatile 轮询 `flags[i * kFlagPadCount]`，看到 `i + 1` 后记录 `seen_ns[i]` 和 `poll_iters[i]`。
+- AICPU consumer 默认使用 `AivAicpuPollFlags` 顺序轮询 `flags[i * kFlagPadCount]`，看到 `i + 1` 后记录 `seen_ns[i]` 和 `poll_iters[i]`。并发写 flag 实验可使用 `AivAicpuPollFlagsScan` 扫描记录模式。
 - `aiv_store` 使用 AscendC AIV kernel，通过 UB local tensor + `DataCopy` 写 GM flag。
 - `simt_store` 使用一个 SIMT thread 顺序写 flag，写法是 volatile global store。
 - `simt_atomic` 使用一个 SIMT thread 顺序执行 `asc_atomic_exch` 写 flag。
@@ -90,6 +90,36 @@ export LD_LIBRARY_PATH=$ASCEND_CUSTOM_OPP_PATH/op_proto/lib/linux/$(uname -m):$A
 ```
 
 这只用于拉开 flag 写入间隔，不代表真实业务计算阶段。
+
+## 多 thread 并发写 flag
+
+并发写 flag 第一版新增四个 mode：
+
+- `simt_store_parallel_seq`：多个 SIMT thread 按 stride 分配不同 flag，普通 GM store 写入；AICPU 按 `flag0 -> flag1 -> ...` 顺序消费。
+- `simt_store_parallel_scan`：多个 SIMT thread 按 stride 分配不同 flag，普通 GM store 写入；AICPU 使用 `AivAicpuPollFlagsScan` 循环扫描所有 flag，谁先出现就先记录谁。
+- `simt_atomic_parallel_seq`：多个 SIMT thread 按 stride 分配不同 flag，atomic exchange 写入；AICPU 顺序消费。
+- `simt_atomic_parallel_scan`：多个 SIMT thread 按 stride 分配不同 flag，atomic exchange 写入；AICPU 扫描记录。
+
+SIMT producer 的分配方式是：
+
+```cpp
+for (uint32_t task = threadIdx.x; task < taskCount; task += blockDim.x) {
+    flags[task * kFlagPadCount] = task + 1;
+}
+```
+
+例如 `--tasks=64 --simt-threads=4` 时，`thread0` 写 `flag0/4/8...`，`thread1` 写 `flag1/5/9...`，以此类推。
+
+建议先对比 seq 和 scan 两种 AICPU 观察方式：
+
+```bash
+./build-a5/simt_store_visibility --device=0 --mode=simt_store_parallel_seq --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
+./build-a5/simt_store_visibility --device=0 --mode=simt_store_parallel_scan --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
+./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic_parallel_seq --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
+./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic_parallel_scan --tasks=64 --iters=20 --warmup=3 --delay-iters=0 --simt-threads=32
+```
+
+`seq` 模式回答的是 AICPU 按顺序消费并发 flag 的表现；`scan` 模式更适合观察多 thread 并发写不同 flag 后，AICPU 第一次扫描到每个 flag 的时间。`scan` 记录的仍然是 AICPU 观察时间，不是 producer 写入指令真正完成的绝对时间，精度会受 `taskCount` 和扫描周期影响。
 
 ## Producer-only profiling
 

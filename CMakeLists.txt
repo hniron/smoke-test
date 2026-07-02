@@ -397,6 +397,19 @@ file(WRITE "${CUST_AICPU_KERNEL_JSON}"
             \"userDefined\": \"True\",
             \"workspaceSize\": \"100\"
         }
+    },
+    \"AivAicpuPollFlagsScan\": {
+        \"opInfo\": {
+            \"computeCost\": \"100\",
+            \"engine\": \"DNN_VM_AICPU\",
+            \"flagAsync\": \"False\",
+            \"flagPartial\": \"False\",
+            \"functionName\": \"RunCpuKernel\",
+            \"kernelSo\": \"libsimt_test_aicpu_poll_kernel.so\",
+            \"opKernelLib\": \"CUSTAICPUKernel\",
+            \"userDefined\": \"True\",
+            \"workspaceSize\": \"100\"
+        }
     }
 }
 ")

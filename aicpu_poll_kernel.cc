@@ -115,6 +115,66 @@ public:
     }
 };
 
+class AivAicpuPollFlagsScanKernel : public CpuKernel {
+public:
+    uint32_t Compute(CpuKernelContext &ctx) override
+    {
+        Tensor *flagsTensor = ctx.Input(0);
+        const int64_t *config = nullptr;
+        Tensor *seenNsTensor = ctx.Output(0);
+        Tensor *pollItersTensor = ctx.Output(1);
+        Tensor *statusTensor = ctx.Output(2);
+        if (!HasData(flagsTensor) || !GetConfig(ctx, 1, &config) || !HasData(seenNsTensor) ||
+            !HasData(pollItersTensor) || !HasData(statusTensor)) {
+            return KERNEL_STATUS_PARAM_INVALID;
+        }
+
+        const int64_t taskCount64 = config[0];
+        const int64_t flagStride64 = config[1];
+        const int64_t timeoutNs64 = config[2];
+        if (taskCount64 <= 0 || flagStride64 <= 0 || timeoutNs64 <= 0 ||
+            taskCount64 > static_cast<int64_t>(UINT32_MAX) ||
+            flagStride64 > static_cast<int64_t>(UINT32_MAX)) {
+            return KERNEL_STATUS_PARAM_INVALID;
+        }
+
+        const uint32_t taskCount = static_cast<uint32_t>(taskCount64);
+        const uint32_t flagStride = static_cast<uint32_t>(flagStride64);
+        const uint64_t timeoutNs = static_cast<uint64_t>(timeoutNs64);
+        volatile uint32_t *flags = reinterpret_cast<volatile uint32_t *>(flagsTensor->GetData());
+        uint64_t *seenNs = reinterpret_cast<uint64_t *>(seenNsTensor->GetData());
+        uint64_t *pollIters = reinterpret_cast<uint64_t *>(pollItersTensor->GetData());
+        uint32_t *status = reinterpret_cast<uint32_t *>(statusTensor->GetData());
+
+        status[0] = kAicpuSuccess;
+        for (uint32_t i = 0; i < taskCount; ++i) {
+            seenNs[i] = 0;
+            pollIters[i] = 0;
+        }
+
+        uint32_t remaining = taskCount;
+        const uint64_t startNs = NowNs();
+        while (remaining > 0) {
+            for (uint32_t i = 0; i < taskCount; ++i) {
+                if (seenNs[i] != 0) {
+                    continue;
+                }
+                ++pollIters[i];
+                const uint32_t value = flags[i * flagStride];
+                if (value >= i + 1U) {
+                    seenNs[i] = NowNs();
+                    --remaining;
+                }
+            }
+            if ((NowNs() - startNs) > timeoutNs) {
+                status[0] = kAicpuTimeout;
+                return KERNEL_STATUS_OK;
+            }
+        }
+        return KERNEL_STATUS_OK;
+    }
+};
+
 class AivAicpuStampFlagKernel : public CpuKernel {
 public:
     uint32_t Compute(CpuKernelContext &ctx) override
@@ -271,6 +331,7 @@ public:
 
 REGISTER_CPU_KERNEL(kAicpuNoopOpName, AivAicpuNoopKernel);
 REGISTER_CPU_KERNEL(kAicpuPollFlagsOpName, AivAicpuPollFlagsKernel);
+REGISTER_CPU_KERNEL(kAicpuPollFlagsScanOpName, AivAicpuPollFlagsScanKernel);
 REGISTER_CPU_KERNEL(kAicpuStampFlagOpName, AivAicpuStampFlagKernel);
 REGISTER_CPU_KERNEL(kAicpuStampOnlyOpName, AivAicpuStampOnlyKernel);
 REGISTER_CPU_KERNEL(kAicpuReadBenchOpName, AivAicpuReadBenchKernel);

@@ -5,6 +5,7 @@
 
 constexpr const char *kAicpuNoopOpName = "AivAicpuNoop";
 constexpr const char *kAicpuPollFlagsOpName = "AivAicpuPollFlags";
+constexpr const char *kAicpuPollFlagsScanOpName = "AivAicpuPollFlagsScan";
 constexpr const char *kAicpuStampFlagOpName = "AivAicpuStampFlag";
 constexpr const char *kAicpuStampOnlyOpName = "AivAicpuStampOnly";
 constexpr const char *kAicpuReadBenchOpName = "AivAicpuReadBench";

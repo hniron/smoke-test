@@ -16,6 +16,14 @@ REG_OP(AivAicpuPollFlags)
     .OUTPUT(status, TensorType({DT_INT32}))
     .OP_END_FACTORY_REG(AivAicpuPollFlags)
 
+REG_OP(AivAicpuPollFlagsScan)
+    .INPUT(flags, TensorType({DT_INT32}))
+    .INPUT(config, TensorType({DT_INT64}))
+    .OUTPUT(seen_ns, TensorType({DT_INT64}))
+    .OUTPUT(poll_iters, TensorType({DT_INT64}))
+    .OUTPUT(status, TensorType({DT_INT32}))
+    .OP_END_FACTORY_REG(AivAicpuPollFlagsScan)
+
 REG_OP(AivAicpuStampFlag)
     .INPUT(flags, TensorType({DT_INT32}))
     .INPUT(config, TensorType({DT_INT64}))
@@ -162,6 +170,10 @@ IMPL_OP_INFERSHAPE(AivAicpuNoop)
     .InferDataType(InferTypeNoop);
 
 IMPL_OP_INFERSHAPE(AivAicpuPollFlags)
+    .InferShape(InferShapePollFlags)
+    .InferDataType(InferTypePollFlags);
+
+IMPL_OP_INFERSHAPE(AivAicpuPollFlagsScan)
     .InferShape(InferShapePollFlags)
     .InferDataType(InferTypePollFlags);
 
