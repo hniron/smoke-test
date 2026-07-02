@@ -139,7 +139,9 @@ void Usage(const char *prog)
         << "usage: " << prog << " [--device=0] [--tasks=64] [--iters=20] [--warmup=3]\n"
         << "       [--timeout-ms=5000] [--delay-iters=0] [--simt-threads=32]\n"
         << "       [--mode=all|aiv_store|simt_store|simt_atomic|aicpu_noop]\n"
-        << "       CUST AICPU modes require ASCEND_CUSTOM_OPP_PATH to point at build/custom_opp/vendors/cust.\n";
+        << "       [--mode=aiv_only|simt_store_only|simt_atomic_only]\n"
+        << "       CUST AICPU polling modes require ASCEND_CUSTOM_OPP_PATH to point at "
+        << "build/custom_opp/vendors/cust.\n";
 }
 
 bool ParseOptions(int argc, char **argv, Options *opt)
@@ -159,7 +161,8 @@ bool ParseOptions(int argc, char **argv, Options *opt)
     }
 
     const bool validMode = opt->mode == "all" || opt->mode == "aiv_store" ||
-        opt->mode == "simt_store" || opt->mode == "simt_atomic" || opt->mode == "aicpu_noop";
+        opt->mode == "simt_store" || opt->mode == "simt_atomic" || opt->mode == "aicpu_noop" ||
+        opt->mode == "aiv_only" || opt->mode == "simt_store_only" || opt->mode == "simt_atomic_only";
     return validMode && opt->tasks > 0 && opt->iters > 0 && opt->timeoutMs > 0 &&
         opt->simtThreads > 0 && opt->simtThreads <= 2048;
 }
@@ -197,6 +200,42 @@ bool NeedSimtAtomic(const Options &opt)
 bool NeedAicpuNoop(const Options &opt)
 {
     return opt.mode == "aicpu_noop";
+}
+
+bool NeedAivOnly(const Options &opt)
+{
+#if defined(ENABLE_AIV_PRODUCER)
+    return opt.mode == "aiv_only";
+#else
+    (void)opt;
+    return false;
+#endif
+}
+
+bool NeedSimtStoreOnly(const Options &opt)
+{
+#if defined(ENABLE_SIMT_STORE_PRODUCER)
+    return opt.mode == "simt_store_only";
+#else
+    (void)opt;
+    return false;
+#endif
+}
+
+bool NeedSimtAtomicOnly(const Options &opt)
+{
+#if defined(ENABLE_SIMT_ATOMIC_PRODUCER)
+    return opt.mode == "simt_atomic_only";
+#else
+    (void)opt;
+    return false;
+#endif
+}
+
+bool UsesCustomAicpu(const Options &opt)
+{
+    return opt.mode == "all" || opt.mode == "aicpu_noop" || opt.mode == "aiv_store" ||
+        opt.mode == "simt_store" || opt.mode == "simt_atomic";
 }
 
 bool CustomOppPathConfigured()
@@ -385,6 +424,33 @@ enum class ProducerKind {
     SimtAtomic,
 };
 
+int LaunchProducer(const Options &opt, const DeviceBuffers &buf, ProducerKind kind, aclrtStream producerStream)
+{
+    if (kind == ProducerKind::AivStore) {
+#if defined(ENABLE_AIV_PRODUCER)
+        int ret = LaunchAivWriteFlags(buf.flags, opt.tasks, opt.delayIters, producerStream);
+        if (ret != 0) return ret;
+#else
+        return Fail("AIV producer is not compiled in this binary", 1, __LINE__);
+#endif
+    } else if (kind == ProducerKind::SimtStore) {
+#if defined(ENABLE_SIMT_STORE_PRODUCER)
+        int ret = LaunchSimtWriteFlagsStore(buf.flags, opt.tasks, opt.delayIters, opt.simtThreads, producerStream);
+        if (ret != 0) return ret;
+#else
+        return Fail("SIMT store producer is not compiled in this binary", 1, __LINE__);
+#endif
+    } else {
+#if defined(ENABLE_SIMT_ATOMIC_PRODUCER)
+        int ret = LaunchSimtWriteFlagsAtomic(buf.flags, opt.tasks, opt.delayIters, opt.simtThreads, producerStream);
+        if (ret != 0) return ret;
+#else
+        return Fail("SIMT atomic producer is not compiled in this binary", 1, __LINE__);
+#endif
+    }
+    return 0;
+}
+
 int RunProducerWithPoll(const Options &opt, const DeviceBuffers &buf, ProducerKind kind,
     aclrtStream producerStream, aclrtStream aicpuStream, RunResult *result)
 {
@@ -397,33 +463,28 @@ int RunProducerWithPoll(const Options &opt, const DeviceBuffers &buf, ProducerKi
     ret = LaunchAicpuPollFlags(opt, buf, aicpuStream);
     if (ret != 0) return ret;
 
-    if (kind == ProducerKind::AivStore) {
-#if defined(ENABLE_AIV_PRODUCER)
-        ret = LaunchAivWriteFlags(buf.flags, opt.tasks, opt.delayIters, producerStream);
-        if (ret != 0) return ret;
-#else
-        return Fail("AIV producer is not compiled in this binary", 1, __LINE__);
-#endif
-    } else if (kind == ProducerKind::SimtStore) {
-#if defined(ENABLE_SIMT_STORE_PRODUCER)
-        ret = LaunchSimtWriteFlagsStore(buf.flags, opt.tasks, opt.delayIters, opt.simtThreads, producerStream);
-        if (ret != 0) return ret;
-#else
-        return Fail("SIMT store producer is not compiled in this binary", 1, __LINE__);
-#endif
-    } else {
-#if defined(ENABLE_SIMT_ATOMIC_PRODUCER)
-        ret = LaunchSimtWriteFlagsAtomic(buf.flags, opt.tasks, opt.delayIters, opt.simtThreads, producerStream);
-        if (ret != 0) return ret;
-#else
-        return Fail("SIMT atomic producer is not compiled in this binary", 1, __LINE__);
-#endif
-    }
+    ret = LaunchProducer(opt, buf, kind, producerStream);
+    if (ret != 0) return ret;
 
     CHECK_ACL(aclrtSynchronizeStream(producerStream));
     CHECK_ACL(aclrtSynchronizeStream(aicpuStream));
     const uint64_t end = HostNowNs();
     return CopyResult(opt, buf, static_cast<double>(end - start) / 1000.0, result);
+}
+
+int RunProducerOnly(const Options &opt, const DeviceBuffers &buf, ProducerKind kind,
+    aclrtStream producerStream, double *hostUs)
+{
+    CHECK_ACL(aclrtSynchronizeStream(producerStream));
+    CHECK_ACL(aclrtMemset(buf.flags, buf.flagsBytes, 0, buf.flagsBytes));
+
+    const uint64_t start = HostNowNs();
+    int ret = LaunchProducer(opt, buf, kind, producerStream);
+    if (ret != 0) return ret;
+    CHECK_ACL(aclrtSynchronizeStream(producerStream));
+    const uint64_t end = HostNowNs();
+    *hostUs = static_cast<double>(end - start) / 1000.0;
+    return 0;
 }
 
 double Average(const std::vector<double> &values)
@@ -499,6 +560,15 @@ void PrintSummaryValue(const char *name, const std::vector<double> &hostUs, cons
               << " " << name << "_seen_interval_avg_us=" << Average(intervalUs);
 }
 
+void PrintProducerOnlyRun(const char *name, const Options &opt, double hostUs)
+{
+    std::cout << name
+              << " status=0"
+              << " host_total_us=" << std::fixed << std::setprecision(2) << hostUs
+              << " host_per_flag_us=" << (hostUs / static_cast<double>(opt.tasks))
+              << std::endl;
+}
+
 } // namespace
 
 int32_t main(int32_t argc, char **argv)
@@ -524,7 +594,7 @@ int32_t main(int32_t argc, char **argv)
     CHECK_ACL(LogAclDeviceCount());
     CHECK_ACL(aclrtSetDevice(opt.device));
 
-    if (!CustomOppPathConfigured()) {
+    if (UsesCustomAicpu(opt) && !CustomOppPathConfigured()) {
         std::cerr << "FAIL: CUST AICPU modes require ASCEND_CUSTOM_OPP_PATH to point at "
                   << "build/custom_opp/vendors/cust before launching the benchmark." << std::endl;
         return 1;
@@ -533,7 +603,9 @@ int32_t main(int32_t argc, char **argv)
     aclrtStream producerStream = nullptr;
     aclrtStream aicpuStream = nullptr;
     CHECK_ACL(aclrtCreateStream(&producerStream));
-    CHECK_ACL(aclrtCreateStream(&aicpuStream));
+    if (UsesCustomAicpu(opt)) {
+        CHECK_ACL(aclrtCreateStream(&aicpuStream));
+    }
 
     DeviceBuffers buf;
     int ret = InitBuffers(opt, &buf);
@@ -546,6 +618,9 @@ int32_t main(int32_t argc, char **argv)
     std::vector<double> simtAtomicHostUs;
     std::vector<double> simtAtomicIntervalUs;
     std::vector<double> noopUs;
+    std::vector<double> aivOnlyHostUs;
+    std::vector<double> simtStoreOnlyHostUs;
+    std::vector<double> simtAtomicOnlyHostUs;
 
     RunResult lastAiv;
     RunResult lastSimtStore;
@@ -556,6 +631,9 @@ int32_t main(int32_t argc, char **argv)
         RunResult simtStore;
         RunResult simtAtomic;
         double noop = 0.0;
+        double aivOnly = 0.0;
+        double simtStoreOnly = 0.0;
+        double simtAtomicOnly = 0.0;
 
         if (NeedAicpuNoop(opt)) {
             ret = RunAicpuNoop(buf, producerStream, aicpuStream, &noop);
@@ -571,6 +649,18 @@ int32_t main(int32_t argc, char **argv)
         }
         if (NeedSimtAtomic(opt)) {
             ret = RunProducerWithPoll(opt, buf, ProducerKind::SimtAtomic, producerStream, aicpuStream, &simtAtomic);
+            if (ret != 0) return ret;
+        }
+        if (NeedAivOnly(opt)) {
+            ret = RunProducerOnly(opt, buf, ProducerKind::AivStore, producerStream, &aivOnly);
+            if (ret != 0) return ret;
+        }
+        if (NeedSimtStoreOnly(opt)) {
+            ret = RunProducerOnly(opt, buf, ProducerKind::SimtStore, producerStream, &simtStoreOnly);
+            if (ret != 0) return ret;
+        }
+        if (NeedSimtAtomicOnly(opt)) {
+            ret = RunProducerOnly(opt, buf, ProducerKind::SimtAtomic, producerStream, &simtAtomicOnly);
             if (ret != 0) return ret;
         }
 
@@ -599,6 +689,18 @@ int32_t main(int32_t argc, char **argv)
                 lastSimtAtomic = simtAtomic;
                 PrintRun("simt_atomic", opt, simtAtomic);
             }
+            if (NeedAivOnly(opt)) {
+                aivOnlyHostUs.push_back(aivOnly);
+                PrintProducerOnlyRun("aiv_only", opt, aivOnly);
+            }
+            if (NeedSimtStoreOnly(opt)) {
+                simtStoreOnlyHostUs.push_back(simtStoreOnly);
+                PrintProducerOnlyRun("simt_store_only", opt, simtStoreOnly);
+            }
+            if (NeedSimtAtomicOnly(opt)) {
+                simtAtomicOnlyHostUs.push_back(simtAtomicOnly);
+                PrintProducerOnlyRun("simt_atomic_only", opt, simtAtomicOnly);
+            }
         }
     }
 
@@ -609,6 +711,15 @@ int32_t main(int32_t argc, char **argv)
     PrintSummaryValue("aiv_store", aivHostUs, aivIntervalUs);
     PrintSummaryValue("simt_store", simtStoreHostUs, simtStoreIntervalUs);
     PrintSummaryValue("simt_atomic", simtAtomicHostUs, simtAtomicIntervalUs);
+    if (!aivOnlyHostUs.empty()) {
+        std::cout << " aiv_only_host_avg_us=" << Average(aivOnlyHostUs);
+    }
+    if (!simtStoreOnlyHostUs.empty()) {
+        std::cout << " simt_store_only_host_avg_us=" << Average(simtStoreOnlyHostUs);
+    }
+    if (!simtAtomicOnlyHostUs.empty()) {
+        std::cout << " simt_atomic_only_host_avg_us=" << Average(simtAtomicOnlyHostUs);
+    }
     if (!aivIntervalUs.empty() && !simtStoreIntervalUs.empty()) {
         const double aivAvg = Average(aivIntervalUs);
         std::cout << " simt_store_over_aiv_seen_interval="

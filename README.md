@@ -91,6 +91,29 @@ export LD_LIBRARY_PATH=$ASCEND_CUSTOM_OPP_PATH/op_proto/lib/linux/$(uname -m):$A
 
 这只用于拉开 flag 写入间隔，不代表真实业务计算阶段。
 
+## Producer-only profiling
+
+如果 `msprof` 包住带 custom AICPU consumer 的模式时卡在启动阶段，可以先用 producer-only mode 只采 AIV/SIMT producer kernel。这个路径不会调用 `AivAicpuPollFlags` 或 `AivAicpuNoop`，因此不依赖 `ASCEND_CUSTOM_OPP_PATH`；如果环境里已经设置了也不影响。
+
+先不加 `msprof` 做冒烟：
+
+```bash
+./build-a5/aiv_flag_visibility --device=0 --mode=aiv_only --tasks=64 --iters=1 --warmup=0 --delay-iters=0
+./build-a5/simt_store_visibility --device=0 --mode=simt_store_only --tasks=64 --iters=1 --warmup=0 --delay-iters=0 --simt-threads=32
+./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic_only --tasks=64 --iters=1 --warmup=0 --delay-iters=0 --simt-threads=32
+```
+
+再用轻量 `msprof` 包 producer-only：
+
+```bash
+mkdir -p msprof_out
+msprof --output=./msprof_out/aiv_only --application="./build-a5/aiv_flag_visibility --device=0 --mode=aiv_only --tasks=64 --iters=1 --warmup=0 --delay-iters=0" --task-time=on --runtime-api=on
+msprof --output=./msprof_out/simt_store_only --application="./build-a5/simt_store_visibility --device=0 --mode=simt_store_only --tasks=64 --iters=1 --warmup=0 --delay-iters=0 --simt-threads=32" --task-time=on --runtime-api=on
+msprof --output=./msprof_out/simt_atomic_only --application="./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic_only --tasks=64 --iters=1 --warmup=0 --delay-iters=0 --simt-threads=32" --task-time=on --runtime-api=on
+```
+
+注意：`*_only` 只用于看 producer kernel 的 launch/执行时间线，输出的 `host_total_us` 是 host 侧 launch 到 stream sync 的时间，不包含 AICPU 观察 flag 的可见性指标。目标 A 的同步可见性对比仍然要看 `aiv_store`、`simt_store`、`simt_atomic` 三个带 AICPU poll 的模式。
+
 ## 指标解读
 
 每组重点看：
