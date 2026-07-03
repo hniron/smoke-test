@@ -46,7 +46,6 @@ struct Options {
     uint64_t timeoutMs = kDefaultTimeoutMs;
     uint32_t delayIters = 0;
     uint32_t simtThreads = kDefaultSimtThreads;
-    uint32_t aicpuPrint = 0;
     std::string mode = "all";
 };
 
@@ -142,7 +141,7 @@ void Usage(const char *prog)
 {
     std::cerr
         << "usage: " << prog << " [--device=0] [--tasks=64] [--iters=20] [--warmup=3]\n"
-        << "       [--timeout-ms=5000] [--delay-iters=0] [--simt-threads=32] [--aicpu-print=0]\n"
+        << "       [--timeout-ms=5000] [--delay-iters=0] [--simt-threads=32]\n"
         << "       [--mode=all|aiv_store|simt_store|simt_atomic|aicpu_noop]\n"
         << "       [--mode=aiv_only|simt_store_only|simt_atomic_only]\n"
         << "       [--mode=simt_store_parallel_seq|simt_store_parallel_scan]\n"
@@ -161,7 +160,6 @@ bool ParseOptions(int argc, char **argv, Options *opt)
             ParseU64(argv[i], "--timeout-ms", &opt->timeoutMs) ||
             ParseU32(argv[i], "--delay-iters", &opt->delayIters) ||
             ParseU32(argv[i], "--simt-threads", &opt->simtThreads) ||
-            ParseU32(argv[i], "--aicpu-print", &opt->aicpuPrint) ||
             ParseStr(argv[i], "--mode", &opt->mode)) {
             continue;
         }
@@ -174,7 +172,7 @@ bool ParseOptions(int argc, char **argv, Options *opt)
         opt->mode == "simt_store_parallel_seq" || opt->mode == "simt_store_parallel_scan" ||
         opt->mode == "simt_atomic_parallel_seq" || opt->mode == "simt_atomic_parallel_scan";
     return validMode && opt->tasks > 0 && opt->iters > 0 && opt->timeoutMs > 0 &&
-        opt->simtThreads > 0 && opt->simtThreads <= 2048 && opt->aicpuPrint <= 1;
+        opt->simtThreads > 0 && opt->simtThreads <= 2048;
 }
 
 bool NeedAivStore(const Options &opt)
@@ -377,12 +375,12 @@ int LaunchAicpuNoop(const DeviceBuffers &buf, aclrtStream stream)
 int LaunchAicpuPollOp(const char *opName, const Options &opt, const DeviceBuffers &buf, aclrtStream stream)
 {
     const int64_t configValues[] = {static_cast<int64_t>(opt.tasks), static_cast<int64_t>(kFlagPadCount),
-        static_cast<int64_t>(opt.timeoutMs * 1000000ULL), static_cast<int64_t>(opt.aicpuPrint)};
-    int ret = CopyConfig(buf, 0, configValues, 4);
+        static_cast<int64_t>(opt.timeoutMs * 1000000ULL)};
+    int ret = CopyConfig(buf, 0, configValues, 3);
     if (ret != 0) return ret;
 
     int64_t flagDims[] = {static_cast<int64_t>(opt.tasks), static_cast<int64_t>(kFlagPadCount)};
-    int64_t configDims[] = {4};
+    int64_t configDims[] = {3};
     int64_t vectorDims[] = {static_cast<int64_t>(opt.tasks)};
     int64_t statusDims[] = {1};
     aclTensorDesc *inputDescs[] = {
@@ -396,7 +394,7 @@ int LaunchAicpuPollOp(const char *opName, const Options &opt, const DeviceBuffer
     };
     aclDataBuffer *inputBuffers[] = {
         aclCreateDataBuffer(buf.flags, buf.flagsBytes),
-        aclCreateDataBuffer(ConfigPtr(buf, 0), 4 * sizeof(int64_t)),
+        aclCreateDataBuffer(ConfigPtr(buf, 0), 3 * sizeof(int64_t)),
     };
     aclDataBuffer *outputBuffers[] = {
         aclCreateDataBuffer(buf.seenNs, buf.timeBytes),
@@ -424,7 +422,7 @@ int InitBuffers(const Options &opt, DeviceBuffers *buf)
 {
     buf->flagsBytes = static_cast<size_t>(opt.tasks) * kFlagPadCount * sizeof(uint32_t);
     buf->timeBytes = static_cast<size_t>(opt.tasks) * sizeof(uint64_t);
-    buf->configBytes = 4 * sizeof(int64_t);
+    buf->configBytes = 3 * sizeof(int64_t);
 
     CHECK_ACL(aclrtMalloc(&buf->flags, buf->flagsBytes, ACL_MEM_MALLOC_HUGE_FIRST));
     CHECK_ACL(aclrtMalloc(&buf->seenNs, buf->timeBytes, ACL_MEM_MALLOC_HUGE_FIRST));
@@ -673,7 +671,6 @@ int32_t main(int32_t argc, char **argv)
               << " timeout_ms=" << opt.timeoutMs
               << " delay_iters=" << opt.delayIters
               << " simt_threads=" << opt.simtThreads
-              << " aicpu_print=" << opt.aicpuPrint
               << " mode=" << opt.mode
               << std::endl;
 
