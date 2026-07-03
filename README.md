@@ -229,19 +229,28 @@ aiv_snoop
 all
 ```
 
-构建示例：
+### A5 环境下的构建与运行指令
+
+下面这组命令是 A5/CANN 9.x 测试环境下的运行指令，参考 `simt_test` 已验证过的路径和参数：
 
 ```bash
 cd /home/allen/workdir/zhn/aiv_hostcpu_bench
-rm -rf build
-cmake -S . -B build -DCANN_INSTALL_PATH=${ASCEND_HOME_PATH} -DNPU_ARCH=dav-3510 -DASC_ARCH_FLAG=--npu-arch
-cmake --build build -j
+source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+
+rm -rf build-a5
+cmake -S . -B build-a5 \
+  -DCANN_INSTALL_PATH=/usr/local/Ascend/cann-9.1.T560 \
+  -DNPU_ARCH=dav-3510 \
+  -DASC_ARCH_FLAG=--npu-arch
+cmake --build build-a5 -j
 ```
 
-运行示例：
+如果当前 shell 里 `ASCEND_HOME_PATH` 或 `CANN_INSTALL_PATH` 已经指向实际 CANN 根目录，也可以把 `-DCANN_INSTALL_PATH=...` 改成 `${ASCEND_HOME_PATH}` 或 `${CANN_INSTALL_PATH}`。不要使用 `/path/to/cann/set_env.sh` 这种占位路径。
+
+运行 `host_poll_plain`，验证 AIV 写 mapped Host DRAM 后 Host CPU 是否能在线轮询看到 flag：
 
 ```bash
-./build/aiv_hostcpu_bench \
+./build-a5/aiv_hostcpu_bench \
   --device=0 \
   --tasks=4 \
   --elements=262144 \
@@ -253,10 +262,10 @@ cmake --build build -j
   --mode=host_poll_plain
 ```
 
-如果只想确认 AIV 最终是否写到了 mapped host memory：
+如果只想确认 AIV 最终是否写到了 mapped host memory，先跑 `host_poll_postcheck`：
 
 ```bash
-./build/aiv_hostcpu_bench --device=0 --warmup=0 --iters=1 --mode=host_poll_postcheck
+./build-a5/aiv_hostcpu_bench --device=0 --warmup=0 --iters=1 --mode=host_poll_postcheck
 ```
 
 如果怀疑平台需要显式 cache 维护，可以尝试：
