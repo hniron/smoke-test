@@ -154,3 +154,17 @@ msprof --output=./msprof_out/simt_atomic_only --application="./build-a5/simt_ato
 - `poll_iters_avg`：AICPU 轮询次数，辅助判断可见性差异。
 
 `host_total_us` 包含 kernel launch、stream synchronize 等 host 侧开销，只作为辅助参考。
+
+
+## AICPU debug print
+
+如果要确认 custom AICPU poll kernel 确实启动并在读 flag，可以临时加 `--aicpu-print=1`。默认是 `0`，不会打印，避免影响性能测试。
+
+建议只用很小参数做确认：
+
+```bash
+./build-a5/simt_store_visibility --device=0 --mode=simt_store_parallel_scan --tasks=4 --iters=1 --warmup=0 --delay-iters=1000 --simt-threads=4 --aicpu-print=1
+./build-a5/simt_atomic_visibility --device=0 --mode=simt_atomic_parallel_seq --tasks=4 --iters=1 --warmup=0 --delay-iters=1000 --simt-threads=4 --aicpu-print=1
+```
+
+期望能看到类似 `[AICPU][scan] start`、`[AICPU][scan] hit task=...`、`[AICPU][scan] done` 或 `[AICPU][seq] ...` 的输出。打开这个开关会改变计时结果，只用于功能确认，不用于正式 benchmark 数据。

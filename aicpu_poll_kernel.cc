@@ -3,6 +3,7 @@
 #include "cpu_kernel.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 #ifndef KERNEL_STATUS_OK
@@ -76,6 +77,7 @@ public:
         const int64_t taskCount64 = config[0];
         const int64_t flagStride64 = config[1];
         const int64_t timeoutNs64 = config[2];
+        const bool debugPrint = config[3] != 0;
         if (taskCount64 <= 0 || flagStride64 <= 0 || timeoutNs64 <= 0 ||
             taskCount64 > static_cast<int64_t>(UINT32_MAX) ||
             flagStride64 > static_cast<int64_t>(UINT32_MAX)) {
@@ -92,6 +94,12 @@ public:
 
         status[0] = kAicpuSuccess;
         const uint64_t startNs = NowNs();
+        if (debugPrint) {
+            (void)printf("[AICPU][seq] start tasks=%u stride=%u timeout_ns=%llu flags=%p\n",
+                taskCount, flagStride, static_cast<unsigned long long>(timeoutNs),
+                reinterpret_cast<const void *>(flags));
+            (void)fflush(stdout);
+        }
         for (uint32_t i = 0; i < taskCount; ++i) {
             const uint32_t expected = i + 1U;
             uint64_t iters = 0;
@@ -101,15 +109,32 @@ public:
                 if (value >= expected) {
                     seenNs[i] = NowNs();
                     pollIters[i] = iters;
+                    if (debugPrint && (i < 4 || i + 4 >= taskCount)) {
+                        (void)printf("[AICPU][seq] hit task=%u value=%u iters=%llu seen_ns=%llu\n",
+                            i, value, static_cast<unsigned long long>(iters),
+                            static_cast<unsigned long long>(seenNs[i]));
+                        (void)fflush(stdout);
+                    }
                     break;
                 }
                 if ((NowNs() - startNs) > timeoutNs) {
                     status[0] = kAicpuTimeout;
                     seenNs[i] = NowNs();
                     pollIters[i] = iters;
+                    if (debugPrint) {
+                        (void)printf("[AICPU][seq] timeout task=%u iters=%llu seen_ns=%llu\n",
+                            i, static_cast<unsigned long long>(iters),
+                            static_cast<unsigned long long>(seenNs[i]));
+                        (void)fflush(stdout);
+                    }
                     return KERNEL_STATUS_OK;
                 }
             }
+        }
+        if (debugPrint) {
+            (void)printf("[AICPU][seq] done tasks=%u elapsed_ns=%llu\n", taskCount,
+                static_cast<unsigned long long>(NowNs() - startNs));
+            (void)fflush(stdout);
         }
         return KERNEL_STATUS_OK;
     }
@@ -132,6 +157,7 @@ public:
         const int64_t taskCount64 = config[0];
         const int64_t flagStride64 = config[1];
         const int64_t timeoutNs64 = config[2];
+        const bool debugPrint = config[3] != 0;
         if (taskCount64 <= 0 || flagStride64 <= 0 || timeoutNs64 <= 0 ||
             taskCount64 > static_cast<int64_t>(UINT32_MAX) ||
             flagStride64 > static_cast<int64_t>(UINT32_MAX)) {
@@ -153,7 +179,14 @@ public:
         }
 
         uint32_t remaining = taskCount;
+        uint32_t printedHits = 0;
         const uint64_t startNs = NowNs();
+        if (debugPrint) {
+            (void)printf("[AICPU][scan] start tasks=%u stride=%u timeout_ns=%llu flags=%p\n",
+                taskCount, flagStride, static_cast<unsigned long long>(timeoutNs),
+                reinterpret_cast<const void *>(flags));
+            (void)fflush(stdout);
+        }
         while (remaining > 0) {
             for (uint32_t i = 0; i < taskCount; ++i) {
                 if (seenNs[i] != 0) {
@@ -164,12 +197,29 @@ public:
                 if (value >= i + 1U) {
                     seenNs[i] = NowNs();
                     --remaining;
+                    if (debugPrint && printedHits < 16) {
+                        (void)printf("[AICPU][scan] hit task=%u value=%u iters=%llu remaining=%u seen_ns=%llu\n",
+                            i, value, static_cast<unsigned long long>(pollIters[i]), remaining,
+                            static_cast<unsigned long long>(seenNs[i]));
+                        (void)fflush(stdout);
+                        ++printedHits;
+                    }
                 }
             }
             if ((NowNs() - startNs) > timeoutNs) {
                 status[0] = kAicpuTimeout;
+                if (debugPrint) {
+                    (void)printf("[AICPU][scan] timeout remaining=%u elapsed_ns=%llu\n",
+                        remaining, static_cast<unsigned long long>(NowNs() - startNs));
+                    (void)fflush(stdout);
+                }
                 return KERNEL_STATUS_OK;
             }
+        }
+        if (debugPrint) {
+            (void)printf("[AICPU][scan] done tasks=%u elapsed_ns=%llu\n", taskCount,
+                static_cast<unsigned long long>(NowNs() - startNs));
+            (void)fflush(stdout);
         }
         return KERNEL_STATUS_OK;
     }
