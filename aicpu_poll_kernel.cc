@@ -97,7 +97,7 @@ public:
         if (debugPrint) {
             (void)printf("[AICPU][seq] start tasks=%u stride=%u timeout_ns=%llu flags=%p\n",
                 taskCount, flagStride, static_cast<unsigned long long>(timeoutNs),
-                reinterpret_cast<const void *>(flags));
+                flagsTensor->GetData());
             (void)fflush(stdout);
         }
         for (uint32_t i = 0; i < taskCount; ++i) {
@@ -184,7 +184,7 @@ public:
         if (debugPrint) {
             (void)printf("[AICPU][scan] start tasks=%u stride=%u timeout_ns=%llu flags=%p\n",
                 taskCount, flagStride, static_cast<unsigned long long>(timeoutNs),
-                reinterpret_cast<const void *>(flags));
+                flagsTensor->GetData());
             (void)fflush(stdout);
         }
         while (remaining > 0) {
