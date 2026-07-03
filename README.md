@@ -172,7 +172,8 @@ Host CPU 轮询 `flagHost` 时，可能一直读到自己 cache 里的旧值。A
 1. flag 每个 task 独占 cache line，建议 `flagStride = 16` 个 `uint32_t`，即 64B。
 2. Host 轮询使用 `volatile` 或 atomic load，避免编译器把 load 优化掉。
 3. 每轮开始前清零 `flagHost`。
-4. 如果平台要求 flush/invalidate，需要在后续版本加对应 runtime API 或平台同步原语。
+4. `aclrtHostRegister` 的注册区间使用按 4KB 向上对齐后的 `registered_bytes`，避免只注册 256B 这类小区间导致 runtime/driver 报 invalid argument。
+5. 如果平台要求 flush/invalidate，需要在后续版本加对应 runtime API 或平台同步原语。
 
 `volatile` 或 `std::atomic` 只能约束 Host CPU 侧的编译器和 CPU load 行为，不能单独保证 device write 一定让 CPU cache 立刻可见。
 
