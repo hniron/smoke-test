@@ -117,18 +117,30 @@ for task in tasks:
 
 ## 计划支持的 mode
 
-先设计三个 mode：
+当前主要 mode：
 
 ```text
 host_poll_plain
-  AIV 写 mapped host flag，Host CPU 在线轮询。
+  AIV 先做一段 float workload，再写 mapped host flag，Host CPU 在线轮询。
+  这个 mode 用来验证中途可见性，不适合当成纯 flag latency。
 
 host_poll_postcheck
   Host 不在线轮询，只在 AIV stream synchronize 后检查 flagHost。
   用来判断 AIV 写 mapped host memory 是否至少最终可见。
 
+flag_latency
+  AIV 不再处理 float 数据，只按 event 序列写多个独立 host flag slot。
+  Host CPU 在线轮询这些 slot，记录每个 flag 被看到的 Host 时间。
+
+delay_calib
+  AIV 只跑和 flag_latency 相同的 delay loop，不写 host flag。
+  用来标定某个 --delay-iters 大概带来多少 AIV 侧间隔。
+
 aiv_snoop
   空 AIV kernel launch baseline。
+
+all
+  当前只组合 host_poll_plain + host_poll_postcheck，不自动包含 flag_latency/delay_calib。
 ```
 
 后续如果需要，再加：
@@ -180,7 +192,7 @@ Host CPU 轮询 `flagHost` 时，可能一直读到自己 cache 里的旧值。A
 
 ## 计时口径
 
-初版保留 Host 侧计时：
+`host_poll_plain` 保留原来的 Host 侧计时：
 
 ```text
 host_total_us:
@@ -188,10 +200,42 @@ host_total_us:
   到 Host poller 看到所有 flag 且 AIV stream 完成结束
 
 host_seen_interval_avg_us:
-  Host CPU 连续看到两个 flag 的时间间隔平均值
+  Host CPU 连续看到两个 task flag 的时间间隔平均值
 ```
 
-这个指标不是裸 PCIe write latency，也不是单次 cache miss latency。它是整条工程路径的端到端观测值。
+这里的 `host_seen_interval_avg_us` 包含每个 task 前面的 float DataCopy/Add/DataCopyOut 时间，所以它证明中途可见性，但不是纯 AIV 写 flag -> Host CPU 读 flag 的时延。
+
+`flag_latency` 的计时口径更干净：
+
+```text
+AIV:
+  for event in events:
+      AivDelay(delay_iters)
+      写 flagDev[event * 64B] = event + 1
+
+Host CPU:
+  kernel launch 前启动 poller
+  依次轮询 flagHost[event * 64B]
+  每看到一个 event flag 就记录 HostNowNs()
+```
+
+`flag_latency` 输出里的 `seen_interval_avg_us` / `seen_interval_min_us` / `seen_interval_max_us` 是 Host CPU 看到相邻 event flag 的时间间隔。它比 `host_poll_plain` 更接近 flag 可见性开销，但仍然不是纯硬件单次 store-to-load latency，因为 Host 只能记录“什么时候看到”，不知道 AIV 精确哪一拍发出写。
+
+`delay_calib` 用来估算人工 delay：
+
+```text
+T0 = delay_calib(events=N, delay_iters=0)
+TD = delay_calib(events=N, delay_iters=D)
+人工 delay 每个 event 的额外时间 ~= (TD - T0) / N
+```
+
+后续分析可以用：
+
+```text
+flag_latency_seen_interval_avg_us - delay_calib_extra_per_event_us
+```
+
+这个差值只能理解成“去掉人工 delay 后的剩余观测开销估计”，里面仍包含 AIV 写 host registered memory、Host 可见性路径、Host polling 采样误差、flag 写循环本身开销。
 
 ## 构建方向
 
@@ -227,8 +271,10 @@ bench_main.asc
 ```text
 host_poll_plain
 host_poll_postcheck
+flag_latency
+delay_calib
 aiv_snoop
-all
+all  # 只组合 host_poll_plain + host_poll_postcheck
 ```
 
 ### A5 环境下的构建与运行指令
@@ -269,6 +315,86 @@ cmake --build build-a5 -j
 ```bash
 ./build-a5/aiv_hostcpu_bench --device=0 --warmup=0 --iters=1 --mode=host_poll_postcheck
 ```
+
+### AIV 写 Host flag latency 测试
+
+`flag_latency` 不再分配和处理 x/y/z float 数据，只分配 host registered flag buffer。每个 event 使用一个独立 64B flag slot，AIV 写 `event + 1`，Host CPU 轮询对应 slot。
+
+先从无 delay 开始跑：
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=flag_latency \
+  --events=256 \
+  --delay-iters=0 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000
+```
+
+重点看这些字段：
+
+```text
+seen_interval_avg_us / seen_interval_min_us / seen_interval_max_us
+  Host 看到相邻两个 event flag 的间隔。
+
+one_poll_count
+  有多少个 event 是 Host 第一次读这个 slot 就已经看到新值。
+  如果这个值接近 events，说明 AIV 写得太快，Host 很可能是在事后扫到一批已经写好的 flag。
+
+poll_iters_avg
+  Host 每个 event 平均轮询多少次才看到 flag。
+  太接近 1 时通常说明事件堆积，delay 不够。
+
+first_seen_us
+  第一个 flag 被看到的时间，包含 kernel launch 和调度开销，不要当成 AIV->Host 单次时延。
+```
+
+做 delay sweep，找到 Host 能稳定逐个捕捉 event 的最小 delay：
+
+```bash
+for d in 0 64 256 1024 4096; do
+  ./build-a5/aiv_hostcpu_bench \
+    --device=0 \
+    --mode=flag_latency \
+    --events=256 \
+    --delay-iters=${d} \
+    --warmup=2 \
+    --iters=10 \
+    --timeout-ms=5000
+done
+```
+
+判断标准不是 delay 越大越好，而是找最小的稳定档位：`seen_interval_min_us` 不再大量接近 0，`one_poll_count` 不再接近 `events`，`seen_interval_avg_us` 在多次迭代中比较稳定。
+
+标定 delay loop：
+
+```bash
+for d in 0 64 256 1024 4096; do
+  ./build-a5/aiv_hostcpu_bench \
+    --device=0 \
+    --mode=delay_calib \
+    --events=4096 \
+    --delay-iters=${d} \
+    --warmup=2 \
+    --iters=10
+done
+```
+
+这里 `delay_calib_per_event_avg_us` 仍然包含少量 kernel launch/sync 均摊开销。更推荐用差分：
+
+```text
+delay_extra_per_event_us(D) ~= delay_calib_per_event_avg_us(D) - delay_calib_per_event_avg_us(0)
+```
+
+然后再估算：
+
+```text
+residual_us ~= flag_latency_seen_interval_avg_us(D) - delay_extra_per_event_us(D)
+```
+
+这个 `residual_us` 是当前软件观测方法下的剩余可见性开销估计，不是严格的硬件单次 AIV store 到 Host CPU load latency。
 
 如果怀疑平台需要显式 cache 维护，可以尝试：
 
