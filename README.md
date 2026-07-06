@@ -173,6 +173,70 @@ host_poll_memcpy_baseline
 重点查 aclrtHostRegister 是否成功、flagDev 是否能作为 AIV GM 地址使用、平台是否支持该映射。
 ```
 
+## 主对比实验口径
+
+当前主实验不是测纯 flag latency，而是对比同一段 AIV workload 下两条 flag 可见路径的阶段间隔。
+
+对比基线是 `aiv_aicpu_bench --mode=shared`：
+
+```text
+AIV float DataCopy/Add/DataCopyOut
+  -> AIV 写 HBM/GM flag
+  -> AICPU 轮询 HBM/GM flag
+```
+
+本工程对应使用 `aiv_hostcpu_bench --mode=host_poll_plain`：
+
+```text
+AIV float DataCopy/Add/DataCopyOut
+  -> AIV 写 Host registered memory flag
+  -> Host CPU 轮询 Host DRAM flag
+```
+
+为了让这个对比成立，`host_poll_plain` 的 AIV `RunStage` 和 `aiv_aicpu_bench` 的 `shared` 路径保持同样结构：
+
+```text
+for task in tasks:
+    for repeat in repeat:
+        for offset in elements / tile:
+            DataCopy x
+            DataCopy y
+            Add z = x + y
+            DataCopy z
+    PipeBarrier
+    写 flag
+```
+
+默认参数也对齐：`tasks=4`、`elements=262144`、`tile=1024`、`repeat=1`。主对比时两边必须使用相同参数。
+
+flag 写入大小也对齐：`aiv_aicpu_bench` 使用 `kFlagPadCount=16`，本工程 `host_poll_plain` 使用 `flag_stride_words=16`，也就是每个 task 写 16 个 `uint32_t`、64B。这样 AIV 每次 flag `DataCopy` 的数据量一致，并且每个 flag slot 独占一条常见 64B Host CPU cache line；差异主要来自 flag 目标位置和轮询侧不同。
+
+主对比字段：
+
+```text
+aiv_aicpu_bench shared:
+  aicpu_seen_interval_avg_us
+
+aiv_hostcpu_bench host_poll_plain:
+  host_seen_interval_avg_us
+```
+
+二者都不是纯 flag latency，二者都包含同样的 AIV float add 阶段。可以近似理解为：
+
+```text
+aicpu_seen_interval_avg_us
+  ~= AIV float add 时间
+   + AIV 写 HBM/GM flag 时间
+   + AICPU 轮询采样误差
+
+host_seen_interval_avg_us
+  ~= AIV float add 时间
+   + AIV 写 Host DRAM flag 时间
+   + Host CPU 轮询采样误差
+```
+
+所以这个实验要看的不是单次 store/load 物理延迟，而是同 workload 下 `HBM + AICPU poll` 与 `Host DRAM + Host CPU poll` 两条工程路径的阶段间隔差异。
+
 ## Cache 一致性风险
 
 这个实验最大的风险不是写代码，而是 cache 可见性。
@@ -181,7 +245,7 @@ Host CPU 轮询 `flagHost` 时，可能一直读到自己 cache 里的旧值。A
 
 所以代码里需要：
 
-1. flag 每个 task 独占 cache line，建议 `flagStride = 16` 个 `uint32_t`，即 64B。
+1. 主对比实验使用 `flagStride = 16` 个 `uint32_t`，即 64B，并同步修改 `aiv_aicpu_bench` 的 `kFlagPadCount=16`。这样两边 AIV 每次 flag `DataCopy` 大小一致，同时每个 flag slot 独占一条常见 Host CPU cache line，减少不同 flag 共享同一 cache line 的干扰。
 2. Host 轮询使用 `volatile` 或 atomic load，避免编译器把 load 优化掉。
 3. 每轮开始前清零 `flagHost`。
 4. Host flag 使用 `aclrtMallocHost` 申请，避免普通 malloc/posix 内存被 runtime/driver 识别为非法 Host 注册内存。
@@ -203,7 +267,7 @@ host_seen_interval_avg_us:
   Host CPU 连续看到两个 task flag 的时间间隔平均值
 ```
 
-这里的 `host_seen_interval_avg_us` 包含每个 task 前面的 float DataCopy/Add/DataCopyOut 时间，所以它证明中途可见性，但不是纯 AIV 写 flag -> Host CPU 读 flag 的时延。
+这里的 `host_seen_interval_avg_us` 包含每个 task 前面的 float DataCopy/Add/DataCopyOut 时间。这个口径是主对比实验需要的：它和 `aiv_aicpu_bench` 的 `aicpu_seen_interval_avg_us` 都包含同样的 AIV float workload。
 
 `flag_latency` 的计时口径更干净：
 
@@ -310,6 +374,52 @@ cmake --build build-a5 -j
   --mode=host_poll_plain
 ```
 
+主对比实验要用同一组参数分别跑 `aiv_aicpu_bench shared` 和本工程 `host_poll_plain`。
+
+`aiv_aicpu_bench` 侧，按该工程 README 构建并配置 CUST AICPU 后，在 build 目录运行：
+
+```bash
+cd /home/allen/workdir/zhn/aiv_aicpu_bench/build
+export ASCEND_CUSTOM_OPP_PATH=${PWD}/custom_opp/vendors/cust
+export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):${ASCEND_CUSTOM_OPP_PATH}/op_impl/cpu/aicpu_kernel/impl:${LD_LIBRARY_PATH}
+
+./aiv_aicpu_bench \
+  --device=0 \
+  --tasks=4 \
+  --elements=262144 \
+  --tile=1024 \
+  --repeat=1 \
+  --warmup=1 \
+  --iters=5 \
+  --timeout-ms=5000 \
+  --mode=shared
+```
+
+`aiv_hostcpu_bench` 侧，使用同样参数运行：
+
+```bash
+cd /home/allen/workdir/zhn/aiv_hostcpu_bench
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --tasks=4 \
+  --elements=262144 \
+  --tile=1024 \
+  --repeat=1 \
+  --warmup=1 \
+  --iters=5 \
+  --timeout-ms=5000 \
+  --mode=host_poll_plain
+```
+
+主对比看这两个字段：
+
+```text
+aiv_aicpu_bench shared:          aicpu_seen_interval_avg_us
+aiv_hostcpu_bench host_poll_plain: host_seen_interval_avg_us
+```
+
+两边都包含同样的 AIV float add workload 和同样 64B flag write。差异主要来自 `HBM/GM + AICPU poll` 和 `Host DRAM + Host CPU poll` 两条路径。64B padding 只减少 cache-line sharing 干扰，不代表平台一定提供 Host cache coherent 可见性。
+
 如果只想确认 AIV 最终是否写到了 mapped host memory，先跑 `host_poll_postcheck`：
 
 ```bash
@@ -318,7 +428,7 @@ cmake --build build-a5 -j
 
 ### AIV 写 Host flag latency 测试
 
-`flag_latency` 不再分配和处理 x/y/z float 数据，只分配 host registered flag buffer。每个 event 使用一个独立 64B flag slot，AIV 写 `event + 1`，Host CPU 轮询对应 slot。
+`flag_latency` 不再分配和处理 x/y/z float 数据，只分配 host registered flag buffer。每个 event 使用一个独立 64B flag slot，AIV 写 `event + 1`，Host CPU 轮询对应 slot。这个模式是辅助实验，不是当前主对比口径。
 
 先从无 delay 开始跑：
 
