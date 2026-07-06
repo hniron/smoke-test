@@ -74,7 +74,8 @@ aiv_aicpu_bench/
 - `aiv_multi_stage_add`：方案一使用，一个 AIV kernel 内部执行 N 个阶段。
 - `aiv_one_stage_add`：方案二保留校验版本使用，每次只执行一个阶段，并写 flag。
 - `aiv_one_stage_add_no_flag`：纯 event 版本使用，每次只执行一个阶段，不写 flag。
-- `PollFlags`：方案一使用，AICPU 轮询所有 flag，并记录每个 flag 被看到的时间。
+- `aiv_hbm_flag_series`：`aicpu_flag_latency` 使用，AIV 不做 float add、不加 delay，只连续写多个 HBM/GM flag。
+- `PollFlags`：方案一和 `aicpu_flag_latency` 使用，AICPU 轮询所有 flag，并记录每个 flag 被看到的时间。
 - `StampOnly`：纯 event 版本使用，event wait 之后启动，只记录 AICPU kernel 真正执行到的时间。
 - `StampFlag`：方案二保留校验版本使用，event wait 之后启动，记录时间并校验 flag。
 
@@ -135,6 +136,20 @@ export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):
 ./aiv_aicpu_bench --device=4 --warmup=0 --iters=1 --mode=aicpu_noop
 ```
 
+纯 HBM flag latency 路径示例：
+
+```bash
+./aiv_aicpu_bench \
+  --device=4 \
+  --tasks=256 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000 \
+  --mode=aicpu_flag_latency
+```
+
+这个模式里 `--tasks` 表示连续写/轮询的 flag 个数。AIV 不做 float add、不加 delay，只连续写 `tasks` 个 HBM/GM flag；AICPU 使用现有 `PollFlags` 在线轮询这些 flag。
+
 完整同步测试示例：
 
 ```bash
@@ -158,7 +173,7 @@ export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):
 - `--repeat`：每个阶段重复计算次数。调大可以更粗粒度地增加单阶段计算开销。
 - `--warmup`：预热轮数，不计入 summary。
 - `--iters`：正式统计轮数。
-- `--mode`：选择运行路径，支持 `all`、`shared`、`event_sync_pure`、`event_sync_with_flag_check`、`aicpu_noop`、`aiv_snoop`、`aicpu_read_bench`、`aicpu_read_chase`，默认 `all`。
+- `--mode`：选择运行路径，支持 `all`、`shared`、`event_sync_pure`、`event_sync_with_flag_check`、`aicpu_flag_latency`、`aicpu_noop`、`aiv_snoop`、`aicpu_read_bench`、`aicpu_read_chase`，默认 `all`。
 - `--read-stride`：`aicpu_read_bench` 使用的读步长，单位是 `uint32_t` word，默认 1。
 - `--aicpu-json`：兼容旧命令的保留参数，CUST AICPU 路线下不会再使用它。
 
@@ -171,6 +186,7 @@ export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):
 - `shared`：方案一，共享内存 flag 轮询。
 - `event_sync_pure`：方案二纯 event 版本，拆 kernel + event + AICPU StampOnly，不写/读 flag。
 - `event_sync_with_flag_check`：方案二保留校验版本，拆 kernel + event + AICPU StampFlag，并额外写/读 flag 校验。
+- `aicpu_flag_latency`：AIV 不做 float add、不加 delay，连续写多个 HBM/GM flag，AICPU 在线轮询。
 
 关键字段：
 
@@ -178,6 +194,7 @@ export LD_LIBRARY_PATH=${ASCEND_CUSTOM_OPP_PATH}/op_proto/lib/linux/$(uname -m):
 - `host_total_us`：host 观察到的该方案端到端耗时。
 - `host_per_task_us`：`host_total_us / N`。
 - `aicpu_seen_interval_avg_us`：AICPU 连续看到两个 flag/阶段之间的平均时间间隔。
+- `poll_iters_avg` / `one_poll_count` / `first_poll_iters` / `last_poll_iters`：AICPU 轮询每个 flag 用了多少次 load，可用于判断是否一开始就扫到已经写好的 backlog。
 - `speedup_event_pure_over_shared`：`event_sync_pure_avg_us / shared_avg_us`。大于 1 表示共享内存方案更快。
 - `speedup_event_flag_check_over_shared`：`event_sync_with_flag_check_avg_us / shared_avg_us`，用于观察额外 flag 校验带来的影响。
 
@@ -286,6 +303,12 @@ This directory contains a standalone benchmark for comparing two AIV to AICPU sy
    - Make `stream1` wait for the event, then launch an AICPU `StampFlag` kernel to timestamp and verify the flag.
    - This keeps the previous validation path for checking event-following memory visibility.
 
+4. AICPU flag latency:
+   - Launch one AICPU `PollFlags` kernel on `stream1`.
+   - Launch one AIV `aiv_hbm_flag_series` kernel on `stream0`.
+   - The AIV kernel does not run float add and does not insert delay; it only writes `N` padded HBM/GM flags back-to-back.
+   - This is the HBM/GM counterpart of `aiv_hostcpu_bench --mode=flag_latency`.
+
 The benchmark intentionally uses one AIV block so a stage flag means the whole stage is complete in the shared-memory and flag-check paths. Increase `--elements` or `--repeat` to tune single-stage compute time toward 100 us.
 
 ## Build
@@ -325,6 +348,20 @@ Smoke test:
 ./aiv_aicpu_bench --device=4 --warmup=0 --iters=1 --mode=aicpu_noop
 ```
 
+Pure HBM flag latency example:
+
+```bash
+./aiv_aicpu_bench \
+  --device=4 \
+  --tasks=256 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000 \
+  --mode=aicpu_flag_latency
+```
+
+In this mode, `--tasks` is the number of consecutive flags. AIV does not run float add and does not insert delay; AICPU polls the same padded HBM/GM flag slots through `PollFlags`.
+
 Full run example:
 
 ```bash
@@ -344,6 +381,7 @@ Important output fields:
 - `host_total_us`: host-observed end-to-end elapsed time for one scheme.
 - `host_per_task_us`: `host_total_us / N`.
 - `aicpu_seen_interval_avg_us`: average interval between consecutive AICPU timestamps.
+- `poll_iters_avg` / `one_poll_count` / `first_poll_iters` / `last_poll_iters`: AICPU polling load counts for judging whether the poller is seeing live writes or a prewritten backlog.
 - `speedup_event_pure_over_shared`: `event_sync_pure_avg_us / shared_avg_us`; greater than 1 means shared-memory flag is faster.
 - `speedup_event_flag_check_over_shared`: `event_sync_with_flag_check_avg_us / shared_avg_us`; useful for observing the extra flag-check cost.
 
