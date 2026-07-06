@@ -49,8 +49,8 @@ Host aclrtMalloc flags
 大致流程：
 
 ```text
-Host 申请一块页对齐的 host memory：flagHost
-  -> aclrtHostRegister(flagHost, size, ACL_HOST_REGISTER_MAPPED, &flagDev)
+Host 用 aclrtMallocHost 申请一块 host memory：flagHost
+  -> 按 4KB 对齐后的 registered_bytes 调用 aclrtHostRegister(flagHost, registered_bytes, ACL_HOST_REGISTER_MAPPED, &flagDev)
   -> flagHost 是 Host CPU 使用的地址
   -> flagDev 是 AIV 使用的 device 地址
 ```
@@ -92,7 +92,7 @@ AIV Core
 
 ```text
 x/y/z     : aclrtMalloc，仍放 device HBM，用来制造 AIV stage 计算时间
-flagHost  : page-aligned host memory，Host CPU 轮询
+flagHost  : aclrtMallocHost 申请的 Host memory，Host CPU 轮询
 flagDev   : aclrtHostRegister 返回的 device-visible address，AIV 写入
 ```
 
@@ -172,8 +172,9 @@ Host CPU 轮询 `flagHost` 时，可能一直读到自己 cache 里的旧值。A
 1. flag 每个 task 独占 cache line，建议 `flagStride = 16` 个 `uint32_t`，即 64B。
 2. Host 轮询使用 `volatile` 或 atomic load，避免编译器把 load 优化掉。
 3. 每轮开始前清零 `flagHost`。
-4. `aclrtHostRegister` 的注册区间使用按 4KB 向上对齐后的 `registered_bytes`，避免只注册 256B 这类小区间导致 runtime/driver 报 invalid argument。
-5. 如果平台要求 flush/invalidate，需要在后续版本加对应 runtime API 或平台同步原语。
+4. Host flag 使用 `aclrtMallocHost` 申请，避免普通 malloc/posix 内存被 runtime/driver 识别为非法 Host 注册内存。
+5. `aclrtHostRegister` 的注册区间使用按 4KB 向上对齐后的 `registered_bytes`，避免只注册 256B 这类小区间导致 runtime/driver 报 invalid argument。
+6. 如果平台要求 flush/invalidate，需要在后续版本加对应 runtime API 或平台同步原语。
 
 `volatile` 或 `std::atomic` 只能约束 Host CPU 侧的编译器和 CPU load 行为，不能单独保证 device write 一定让 CPU cache 立刻可见。
 
