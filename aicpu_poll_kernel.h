@@ -10,7 +10,7 @@ constexpr const char *kAicpuStampOnlyOpName = "AivAicpuStampOnly";
 constexpr const char *kAicpuReadBenchOpName = "AivAicpuReadBench";
 constexpr const char *kAicpuReadChaseOpName = "AivAicpuReadChase";
 
-constexpr uint32_t kFlagPadCount = 8;
+constexpr uint32_t kFlagPadCount = 16;
 constexpr uint32_t kAicpuSuccess = 0;
 constexpr uint32_t kAicpuInvalidParam = 1;
 constexpr uint32_t kAicpuTimeout = 2;

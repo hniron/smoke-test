@@ -248,7 +248,7 @@ speedup_event_pure_over_shared
 
 ## 当前假设和风险
 
-当前共享内存默认使用 `aclrtMalloc` 分配 device memory，flag 每个 task padding 到 8 个 `uint32_t`，这是参考本地 HCOMM AIV sync helper 里 GM flag 拷贝对齐习惯做的。
+当前共享内存默认使用 `aclrtMalloc` 分配 device memory，flag 每个 task padding 到 16 个 `uint32_t`，即 64B。这个值用于和 `aiv_hostcpu_bench` 的 Host CPU 轮询路径做 cacheline-isolated 主对比：两边 AIV 每次 flag `DataCopy` 大小一致，并且每个 flag slot 独占一条常见 64B cache line。
 
 方案一是否真正成立，取决于底层是否保证 AIV 写 GM 后 AICPU 能及时看到。后续如果你确认共享内存类型、cache 可见性或 fence/invalidate 要求，需要重点检查：
 
@@ -349,4 +349,4 @@ Important output fields:
 
 ## Current Assumption
 
-The shared memory is allocated with `aclrtMalloc` device memory and flags are padded to 8 `uint32_t` values per task to match AIV GM copy alignment patterns used in local HCOMM AIV sync helpers. If the final memory type changes, update the allocation and visibility/fence path while keeping the benchmark flow unchanged.
+The shared memory is allocated with `aclrtMalloc` device memory and flags are padded to 16 `uint32_t` values per task, i.e. 64B. This matches the cacheline-isolated comparison mode in `aiv_hostcpu_bench`: both paths use the same AIV flag `DataCopy` size, and each flag slot occupies one common 64B cache line. If the final memory type changes, update the allocation and visibility/fence path while keeping the benchmark flow unchanged.
