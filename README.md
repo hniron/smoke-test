@@ -136,6 +136,11 @@ delay_calib
   AIV 只跑和 flag_latency 相同的 delay loop，不写 host flag。
   用来标定某个 --delay-iters 大概带来多少 AIV 侧间隔。
 
+host_aiv_roundtrip
+  Host CPU 写 request flag 到 mapped host memory，AIV 在线轮询 request，
+  AIV 看到后写 ack flag，Host CPU 再轮询 ack。
+  这个 mode 用来验证 CPU->AIV->CPU 双向 flag 同步路径，并测 roundtrip 时间。
+
 aiv_snoop
   空 AIV kernel launch baseline。
 
@@ -337,6 +342,7 @@ host_poll_plain
 host_poll_postcheck
 flag_latency
 delay_calib
+host_aiv_roundtrip
 aiv_snoop
 all  # 只组合 host_poll_plain + host_poll_postcheck
 ```
@@ -425,6 +431,81 @@ aiv_hostcpu_bench host_poll_plain: host_seen_interval_avg_us
 ```bash
 ./build-a5/aiv_hostcpu_bench --device=0 --warmup=0 --iters=1 --mode=host_poll_postcheck
 ```
+
+### Host/AIV 双向 roundtrip 测试
+
+`host_aiv_roundtrip` 对应老师提到的双向 flag 同步思路：
+
+```text
+Host CPU:
+  等 AIV 写 ready
+  对每个 event:
+      写 cpu_req = seq
+      while aiv_ack < seq:
+          轮询 host memory
+
+AIV:
+  写 ready = 1
+  对每个 event:
+      while cpu_req < seq:
+          从 mapped host memory 读 request
+      写 aiv_ack = seq
+```
+
+这个 mode 不做 float add，也不加人工 delay。它不是主对比实验，而是单独验证：
+
+```text
+Host CPU 写 Host DRAM flag
+  -> AIV 通过 mapped device address 读到
+  -> AIV 写 Host DRAM ack flag
+  -> Host CPU 读到 ack
+```
+
+先用很小的 event 数验证路径是否打通：
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_aiv_roundtrip \
+  --events=1 \
+  --warmup=0 \
+  --iters=1 \
+  --timeout-ms=5000 \
+  --aiv-poll-limit=1000000
+```
+
+如果 `status=0` 且 `ready=1 final_req=1 final_ack=1 final_status=0 abort=0`，说明最小 CPU->AIV->CPU 闭环成功。然后再扩大 event 数：
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_aiv_roundtrip \
+  --events=256 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000 \
+  --aiv-poll-limit=1000000
+```
+
+重点看这些字段：
+
+```text
+roundtrip_avg_us / roundtrip_min_us / roundtrip_max_us
+  Host 写 cpu_req 到 Host 看到 aiv_ack 的时间。
+  它包含 Host store 可见到 AIV、AIV polling 采样误差、AIV 写 ack、
+  Host polling 采样误差，不是单向 AIV->Host latency。
+
+host_poll_iters_avg
+  Host 每个 event 平均轮询多少次才看到 AIV ack。
+
+aiv_poll_iters_avg
+  AIV 每个 event 平均轮询多少次才看到 Host request。
+
+ready / final_req / final_ack / final_status / abort
+  控制 flag 的最终值。`final_req == final_ack == events` 通常说明所有 event 都完成。
+```
+
+如果出现 `status=2`、`final_ack < final_req` 或 `aiv_poll_iters_avg` 接近 `--aiv-poll-limit`，优先判断 CPU 写 Host DRAM 后 AIV 在线读取可见性不成立，或者需要平台提供额外的 cache flush / invalidate / coherent mapping 语义。这个 mode 里保留 `--aiv-poll-limit`，就是为了避免 AIV 一直轮询看不到 Host request 时整条 stream 卡死。
 
 ### AIV 写 Host flag latency 测试
 
