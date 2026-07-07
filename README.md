@@ -141,6 +141,11 @@ host_aiv_roundtrip
   AIV 看到后写 ack flag，Host CPU 再轮询 ack。
   这个 mode 用来验证 CPU->AIV->CPU 双向 flag 同步路径，并测 roundtrip 时间。
 
+host_aiv_roundtrip_fast
+  去掉 host_aiv_roundtrip 热路径里的诊断统计和每轮 timeout/status 检查，
+  只保留 Host 写 req、AIV 读 req、AIV 写 ack、Host 读 ack。
+  这个 mode 用来更接近最瘦 roundtrip 开销。
+
 aiv_snoop
   空 AIV kernel launch baseline。
 
@@ -343,6 +348,7 @@ host_poll_postcheck
 flag_latency
 delay_calib
 host_aiv_roundtrip
+host_aiv_roundtrip_fast
 aiv_snoop
 all  # 只组合 host_poll_plain + host_poll_postcheck
 ```
@@ -506,6 +512,71 @@ ready / final_req / final_ack / final_status / abort
 ```
 
 如果出现 `status=2`、`final_ack < final_req` 或 `aiv_poll_iters_avg` 接近 `--aiv-poll-limit`，优先判断 CPU 写 Host DRAM 后 AIV 在线读取可见性不成立，或者需要平台提供额外的 cache flush / invalidate / coherent mapping 语义。这个 mode 里保留 `--aiv-poll-limit`，就是为了避免 AIV 一直轮询看不到 Host request 时整条 stream 卡死。
+
+`host_aiv_roundtrip_fast` 是更瘦的 roundtrip 版本。它的热路径是：
+
+```text
+Host CPU:
+  对每个 event:
+      t0 = HostNowNs()
+      cpu_req = seq
+      while aiv_ack < seq:
+          只轮询 ack，不计 host_poll_iters，不检查 status/timeout/yield
+      t1 = HostNowNs()
+
+AIV:
+  写 ready = 1
+  对每个 event:
+      while cpu_req < seq:
+          只读 cpu_req，不写 aiv_poll_iters，不检查 abort/poll_limit
+      写 aiv_ack = seq
+```
+
+也就是说，相比 `host_aiv_roundtrip`，fast 版本去掉了每轮这些诊断开销：
+
+```text
+AIV 每轮写 aiv_poll_iters
+Host 每轮 hostPolls++
+Host 每轮读 status
+Host 每轮 HostNowNs() timeout 检查
+Host 每轮 yield 检查
+AIV 每轮 abort/poll_limit 检查
+```
+
+fast 版本仍然包含必要动作：
+
+```text
+Host 写 cpu_req
+Host store fence
+AIV 从 mapped host memory 读 cpu_req
+AIV 写 aiv_ack 到 mapped host memory
+Host CPU 轮询读 aiv_ack
+HostNowNs() 记录每轮开始和结束
+```
+
+建议先确认 `host_aiv_roundtrip` 已经 `status=0`，再跑 fast 版本：
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_aiv_roundtrip_fast \
+  --events=256 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000
+```
+
+fast 输出没有 `host_poll_iters_avg` 和 `aiv_poll_iters_avg`，重点看：
+
+```text
+roundtrip_avg_us / roundtrip_min_us / roundtrip_max_us
+  更接近 Host 写 req -> AIV 读 req -> AIV 写 ack -> Host 读 ack 的最瘦软件观测闭环。
+
+ready / final_req / final_ack / final_status / abort
+  `final_req == final_ack == events` 且 `status=0` 时，说明所有 event 都完成。
+```
+
+注意：fast 版本为了减少热路径干扰，没有在每轮 req/ack 等待里做 timeout 和 abort 检查。如果 CPU->AIV 方向没有先被 debug 版本验证过，fast 版本可能卡在 AIV 轮询 `cpu_req` 或 Host 轮询 `aiv_ack` 上。
 
 ### AIV 写 Host flag latency 测试
 
