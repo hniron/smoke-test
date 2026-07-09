@@ -138,7 +138,6 @@ if(ENABLE_HIXL)
         metadef
         error_manager
         hcomm
-        hccl
         mmpa
         ascendalog
         c_sec
