@@ -172,13 +172,30 @@ cmake --build build-a5 -j
 
 HIXL 路径不是默认开启的，因为它需要先有 `libcann_hixl.so`。本仓当前 `hixl/hixl-master/hixl-master` 下有源码和头文件，但不一定已经编出 `.so`。
 
-先在 HIXL 工程中构建 HIXL，参考 `hixl/hixl-master/hixl-master/docs/build.md`：
+如果当前目标只是测试本工程里的 `hixl_write_hbm` / `hixl_read_hbm` baseline，只需要构建 HIXL 主库，不需要构建 HIXL 自带 examples。不要加 `--examples`，否则会额外编译 `aicpu_send_hcomm` 等 sample；这些 sample 依赖额外 HCOMM 头文件路径，和本 benchmark 的 baseline 测试无关。
+
+先在 HIXL 工程中构建 HIXL 主库，参考 `hixl/hixl-master/hixl-master/docs/build.md`：
 
 ```bash
 cd /home/allen/workdir/zhn/hixl/hixl-master/hixl-master
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
-bash build.sh --examples
+rm -rf build build_out
+bash build.sh -j8
+find "$(pwd)" -name 'libcann_hixl.so' -o -name 'hixl.h'
+
+# 建议把 HIXL run 包安装到和 CANN toolkit 相同的安装根路径。
+# A5 上如果 toolkit 的安装根路径不是 /usr/local/Ascend，需要替换 install_root。
+install_root=/usr/local/Ascend
+run_pkg=$(ls build_out/cann-hixl_*_linux-*.run | head -n 1)
+chmod +x "${run_pkg}"
+"${run_pkg}" --full --quiet --pylocal --install-path="${install_root}"
+
+source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+test -f "${ASCEND_HOME_PATH}/aarch64-linux/lib64/libcann_hixl.so"
+test -f "${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json"
 ```
+
+`TransferSync` 运行时会从 `${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json` 加载 HIXL AICPU kernel，所以只编出 `build/src/hixl/libcann_hixl.so` 只能说明能链接，不一定说明运行环境已经完整。源码自编译产生的 `cann-hixl-compat.tar.gz` 默认不含签名头，如果运行时报 HIXL kernel 加载或验签相关错误，需要参考 HIXL `docs/build.md` 的签名说明处理。
 
 然后构建本工程的 HIXL 版本：
 
