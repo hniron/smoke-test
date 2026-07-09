@@ -106,31 +106,45 @@ target_link_libraries(rdma_urma_bench PRIVATE
 )
 
 if(ENABLE_HIXL)
+    set(HIXL_INCLUDE_SEARCH_DIRS
+        "${HIXL_ROOT}/include"
+        "${HIXL_ROOT}/output/include"
+        "${HIXL_ROOT}/install/include"
+        ${CANN_INCLUDE_DIRS}
+    )
+    set(HIXL_LIB_SEARCH_DIRS
+        "${HIXL_ROOT}/build/src/hixl"
+        "${HIXL_ROOT}/build/lib"
+        "${HIXL_ROOT}/output/lib"
+        "${HIXL_ROOT}/install/lib"
+        "${HIXL_ROOT}/lib"
+        "${HIXL_ROOT}/lib64"
+        ${CANN_LIB_DIRS}
+    )
     find_path(HIXL_INCLUDE_DIR
         NAMES hixl/hixl.h
-        PATHS
-            "${HIXL_ROOT}/include"
-            "${HIXL_ROOT}/output/include"
-            "${HIXL_ROOT}/install/include"
+        PATHS ${HIXL_INCLUDE_SEARCH_DIRS}
         NO_DEFAULT_PATH
     )
     find_library(HIXL_CANN_HIXL_LIB
         NAMES cann_hixl
-        PATHS
-            "${HIXL_ROOT}/build/src/hixl"
-            "${HIXL_ROOT}/build/lib"
-            "${HIXL_ROOT}/output/lib"
-            "${HIXL_ROOT}/install/lib"
-            "${HIXL_ROOT}/lib"
-            "${HIXL_ROOT}/lib64"
-            ${CANN_LIB_DIRS}
+        PATHS ${HIXL_LIB_SEARCH_DIRS}
+        NO_DEFAULT_PATH
     )
     if(NOT HIXL_INCLUDE_DIR)
-        message(FATAL_ERROR "ENABLE_HIXL=ON but hixl/hixl.h was not found. Set -DHIXL_ROOT=/path/to/hixl.")
+        message(FATAL_ERROR
+            "ENABLE_HIXL=ON but hixl/hixl.h was not found. "
+            "Set -DHIXL_ROOT=/path/to/hixl source tree, or install HIXL into CANN. "
+            "Checked include dirs: ${HIXL_INCLUDE_SEARCH_DIRS}")
     endif()
     if(NOT HIXL_CANN_HIXL_LIB)
-        message(FATAL_ERROR "ENABLE_HIXL=ON but libcann_hixl.so was not found. Build/install HIXL first or set -DHIXL_ROOT.")
+        message(FATAL_ERROR
+            "ENABLE_HIXL=ON but libcann_hixl.so was not found. "
+            "Build/install HIXL first or set -DHIXL_ROOT. "
+            "Checked library dirs: ${HIXL_LIB_SEARCH_DIRS}")
     endif()
+    message(STATUS "HIXL_INCLUDE_DIR=${HIXL_INCLUDE_DIR}")
+    message(STATUS "HIXL_CANN_HIXL_LIB=${HIXL_CANN_HIXL_LIB}")
     target_compile_definitions(rdma_urma_bench PRIVATE
         ENABLE_HIXL=1
         _GLIBCXX_USE_CXX11_ABI=0

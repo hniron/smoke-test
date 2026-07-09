@@ -154,7 +154,9 @@ hixl_read_hbm
 参考已有 A5 工程，使用 CANN 9.x 路径：
 
 ```bash
-cd /home/allen/workdir/zhn/rdma_urma_bench
+# 按 A5 上实际 benchmark 工程目录填写。
+bench_root=/home/z00888267/rdma_urma_bench
+cd "${bench_root}"
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
 
 rm -rf build-a5
@@ -177,7 +179,9 @@ HIXL 路径不是默认开启的，因为它需要先有 `libcann_hixl.so`。本
 先在 HIXL 工程中构建 HIXL 主库，参考 `hixl/hixl-master/hixl-master/docs/build.md`：
 
 ```bash
-cd /home/allen/workdir/zhn/hixl/hixl-master/hixl-master
+# 按 A5 上实际 HIXL 源码目录填写；从你当前 log 看，这里通常是 /home/z00888267/hixl/hixl。
+hixl_root=/home/z00888267/hixl/hixl
+cd "${hixl_root}"
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
 rm -rf build build_out
 bash build.sh -j8
@@ -191,6 +195,7 @@ chmod +x "${run_pkg}"
 "${run_pkg}" --full --quiet --pylocal --install-path="${install_root}"
 
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+test -f "${ASCEND_HOME_PATH}/aarch64-linux/include/hixl/hixl.h"
 test -f "${ASCEND_HOME_PATH}/aarch64-linux/lib64/libcann_hixl.so"
 test -f "${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json"
 ```
@@ -200,7 +205,10 @@ test -f "${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kern
 然后构建本工程的 HIXL 版本：
 
 ```bash
-cd /home/allen/workdir/zhn/rdma_urma_bench
+# 按 A5 上实际 benchmark 工程目录填写。
+bench_root=/home/z00888267/rdma_urma_bench
+hixl_root=/home/z00888267/hixl/hixl
+cd "${bench_root}"
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
 
 rm -rf build-a5-hixl
@@ -209,11 +217,11 @@ cmake -S . -B build-a5-hixl \
   -DNPU_ARCH=dav-3510 \
   -DASC_ARCH_FLAG=--npu-arch \
   -DENABLE_HIXL=ON \
-  -DHIXL_ROOT=/home/allen/workdir/zhn/hixl/hixl-master/hixl-master
+  -DHIXL_ROOT="${hixl_root}"
 cmake --build build-a5-hixl -j
 ```
 
-如果 CMake 报 `libcann_hixl.so was not found`，说明 HIXL 还没有构建/安装到 `HIXL_ROOT` 下，或者需要把 `HIXL_ROOT` 指到实际安装目录。
+`HIXL_ROOT` 必须指向 A5 上真实存在的 HIXL 源码/构建目录，里面应该有 `include/hixl/hixl.h` 和 `build/src/hixl/libcann_hixl.so`。如果已经通过 run 包把 HIXL 安装进 CANN，本工程的 CMake 也会从 `${ASCEND_HOME_PATH}/aarch64-linux/include` 和 `${ASCEND_HOME_PATH}/aarch64-linux/lib64` 查找 HIXL。
 
 ## 运行示例
 
