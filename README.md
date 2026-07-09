@@ -195,9 +195,17 @@ chmod +x "${run_pkg}"
 "${run_pkg}" --full --quiet --pylocal --install-path="${install_root}"
 
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
-test -f "${ASCEND_HOME_PATH}/aarch64-linux/include/hixl/hixl.h"
-test -f "${ASCEND_HOME_PATH}/aarch64-linux/lib64/libcann_hixl.so"
-test -f "${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json"
+for f in \
+  "${ASCEND_HOME_PATH}/aarch64-linux/include/hixl/hixl.h" \
+  "${ASCEND_HOME_PATH}/aarch64-linux/lib64/libcann_hixl.so" \
+  "${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json"
+do
+  if [ -f "${f}" ]; then
+    echo "OK ${f}"
+  else
+    echo "MISS ${f}"
+  fi
+done
 ```
 
 `TransferSync` 运行时会从 `${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json` 加载 HIXL AICPU kernel，所以只编出 `build/src/hixl/libcann_hixl.so` 只能说明能链接，不一定说明运行环境已经完整。源码自编译产生的 `cann-hixl-compat.tar.gz` 默认不含签名头，如果运行时报 HIXL kernel 加载或验签相关错误，需要参考 HIXL `docs/build.md` 的签名说明处理。

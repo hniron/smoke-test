@@ -131,6 +131,28 @@ if(ENABLE_HIXL)
         PATHS ${HIXL_LIB_SEARCH_DIRS}
         NO_DEFAULT_PATH
     )
+    set(HIXL_DEP_LIBS "")
+    foreach(_hixl_dep IN ITEMS
+        graph
+        ge_common
+        metadef
+        error_manager
+        hcomm
+        hccl
+        mmpa
+        ascendalog
+        c_sec
+    )
+        find_library(_hixl_dep_lib_${_hixl_dep}
+            NAMES ${_hixl_dep}
+            PATHS ${HIXL_LIB_SEARCH_DIRS}
+            NO_DEFAULT_PATH
+        )
+        if(_hixl_dep_lib_${_hixl_dep})
+            list(APPEND HIXL_DEP_LIBS "${_hixl_dep_lib_${_hixl_dep}}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES HIXL_DEP_LIBS)
     if(NOT HIXL_INCLUDE_DIR)
         message(FATAL_ERROR
             "ENABLE_HIXL=ON but hixl/hixl.h was not found. "
@@ -145,6 +167,7 @@ if(ENABLE_HIXL)
     endif()
     message(STATUS "HIXL_INCLUDE_DIR=${HIXL_INCLUDE_DIR}")
     message(STATUS "HIXL_CANN_HIXL_LIB=${HIXL_CANN_HIXL_LIB}")
+    message(STATUS "HIXL_DEP_LIBS=${HIXL_DEP_LIBS}")
     target_compile_definitions(rdma_urma_bench PRIVATE
         ENABLE_HIXL=1
         _GLIBCXX_USE_CXX11_ABI=0
@@ -154,6 +177,7 @@ if(ENABLE_HIXL)
     )
     target_link_libraries(rdma_urma_bench PRIVATE
         "${HIXL_CANN_HIXL_LIB}"
+        ${HIXL_DEP_LIBS}
         pthread
         rt
         dl
