@@ -162,11 +162,21 @@ hixl_host_write_hbm
 hixl_host_read_hbm
   需要 -DENABLE_HIXL=ON 编译。
   Host placement 配置同上，用 `TransferSync(READ)` 从 target device HBM 读到 source host buffer。
+
+hcomm_host_write_hbm
+  需要 -DENABLE_HCOMM=ON 编译。
+  参考 `hixl_send_ubc_ring` 的底层 HCOMM 写法，不走 HIXL `TransferSync`。
+  同进程创建 Host endpoint(client, COMM_ENGINE_CPU) 和 Device endpoint(server, COMM_ENGINE_AICPU)。
+  Host 注册 Host DRAM，Device 注册 target HBM；Host 侧通过 `HcommWriteOnThread` 写远端 HBM，并用 `HcommChannelFence` 等待完成。
+
+hcomm_host_read_hbm
+  需要 -DENABLE_HCOMM=ON 编译。
+  建链和内存注册同上；Host 侧通过 `HcommReadOnThread` 从远端 HBM 读到 Host DRAM，并用 `HcommChannelFence` 等待完成。
 ```
 
-`hixl_write_hbm` / `hixl_read_hbm` 是当前验证 URMA/UB 读写 HBM 的 device-source 路径，不走 `send` 样例里的 `HixlSend` AICPU kernel。本工程使用 HIXL `RegisterMem(MEM_HOST/MEM_DEVICE) -> Connect -> TransferSync(WRITE/READ)`；默认协议配置为 `ub_ctp:host,ub_ctp:device`，让 HIXL 按 A5 可通样例的方式自动生成 Host/Device 侧通信资源。这个路径的建链/通信身份更准确地说是 `source engine(device5) <-> target engine(device0)`，实际传输内存是 `Host DRAM <-> device0 HBM`。
+`hixl_write_hbm` / `hixl_read_hbm` 是 HIXL `TransferSync(WRITE/READ)` 的 device-source 路径。本工程同进程创建两个 HIXL engine，通信身份更准确地说是 `source engine(device5) <-> target engine(device0)`，实际传输内存是 `Host DRAM <-> device0 HBM`。
 
-`hixl_host_write_hbm` / `hixl_host_read_hbm` 是新增的 Host placement 路径。默认简化参数是 RoCE/IP 形式：`endpoint_list[].protocol=roce`、`placement=host`、`comm_id=<host RoCE IP>`。如果当前 A5 环境没有可用的 Host RoCE IP，但有 `HOST_EID/DEVICE_EID`，不要把 EID 填到 `--hixl-host-roce-ip`；应改用 `ub_ctp` 或 `ub_tp`，并通过 `--hixl-source-local-comm-res` / `--hixl-target-local-comm-res` 传完整 LocalCommRes。这个路径不再让 device5 承载 source 通信资源，但 HIXL engine 仍需要在 ACL device context 下初始化，target HBM 仍来自 `--device`。`acl_write_hbm` 仍然只是本地 ACL runtime copy 对照项，不是 RDMA/URMA。
+`hixl_host_write_hbm` / `hixl_host_read_hbm` 是 HIXL Host placement 尝试路径。RoCE/IP Host placement 仍可作为对照；但在当前 A5 UBC/EID 场景下，纯 `source=HOST_EID/host, target=DEVICE_EID/device` 的 HIXL LocalCommRes 可能在 `target.Initialize` 阶段报 `endpoint_list is nullptr`。如果目标是老师说的 Host endpoint 通过 UBC/URMA write/read 本机 Device HBM，优先使用 `hcomm_host_write_hbm` / `hcomm_host_read_hbm`。
 
 `hcomm_smoke` 是 HCOMM 低层接口的第一步验证，不和 `comm-op` 绑定。它验证的是：
 
@@ -262,9 +272,9 @@ cmake --build build-a5-hixl -j
 
 `HIXL_ROOT` 必须指向 A5 上真实存在的 HIXL 源码/构建目录，里面应该有 `include/hixl/hixl.h` 和 `build/src/hixl/libcann_hixl.so`。如果已经通过 run 包把 HIXL 安装进 CANN，本工程的 CMake 也会从 `${ASCEND_HOME_PATH}/aarch64-linux/include` 和 `${ASCEND_HOME_PATH}/aarch64-linux/lib64` 查找 HIXL。
 
-### A5 HCOMM smoke 构建命令
+### A5 HCOMM 构建命令
 
-如果 A5 环境已经支持 HCOMM，可以直接构建本工程的 HCOMM 版本：
+如果 A5 环境已经支持 HCOMM，可以直接构建本工程的 HCOMM 版本。这个版本同时支持 `hcomm_smoke` 和 `hcomm_host_write_hbm` / `hcomm_host_read_hbm`：
 
 ```bash
 # 按 A5 上实际 benchmark 工程目录填写。
@@ -285,7 +295,7 @@ cmake -S . -B build-a5-hcomm \
 cmake --build build-a5-hcomm -j
 ```
 
-如果 HCOMM 头文件和 `libhcomm.so` 已经在 CANN 路径下，`-DHCOMM_ROOT=...` 可以省略；CMake 会从 `${ASCEND_HOME_PATH}/aarch64-linux/include`、`${ASCEND_HOME_PATH}/aarch64-linux/lib64` 等路径查找。
+如果 HCOMM 头文件和 `libhcomm.so` 已经在 CANN 路径下，`-DHCOMM_ROOT=...` 可以省略；CMake 会从 `${ASCEND_HOME_PATH}/aarch64-linux/include`、`${ASCEND_HOME_PATH}/aarch64-linux/lib64` 等路径查找。构建 `hcomm_host_write_hbm/read_hbm` 需要同时能找到 `hcomm_res.h`、`hcomm_primitives.h` 和 `libhcomm.so`。
 
 ## 运行示例
 
@@ -489,68 +499,16 @@ RoCE/IP 读 target Device0 HBM：
 
 #### 5.2 UBC/URMA EID 方式
 
-如果当前环境没有可用的 `10.x.x.x` Host RoCE IP，但有类似下面这种 EID 配置：
+HIXL `TransferSync` 的 UBC/EID Host->Device LocalCommRes 方式目前保留为实验路径。当前 A5 上如果出现 `target.Initialize ... endpoint_list is nullptr`，不要继续在这个路径上纠缠，直接使用下一节的 HCOMM primitive 版本。
+
+EID 配置仍然沿用老师脚本里的这组信息：
 
 ```bash
 export DEVICE_EID=000000000000020000100000df00c101
 export DEVICE_ID=6
+export DEVICE_PHY_ID=6
 export HOST_EID=00000000003f030000100000df080b01
 ```
-
-则不要使用 `--hixl-host-roce-ip`，而是显式传 source/target 两份 LocalCommRes：
-
-```bash
-SRC_LCR='{"version":"1.3","net_instance_id":"default","endpoint_list":[{"protocol":"ub_ctp","comm_id":"'"${HOST_EID}"'","placement":"host","dst_eid":"'"${DEVICE_EID}"'"}]}'
-
-TGT_LCR='{"version":"1.3","net_instance_id":"default","endpoint_list":[{"protocol":"ub_ctp","comm_id":"'"${DEVICE_EID}"'","placement":"device","dst_eid":"'"${HOST_EID}"'"}]}'
-```
-
-UBC/EID 写 target Device HBM：
-
-```bash
-./build-a5-hixl/rdma_urma_bench \
-  --device=${DEVICE_ID} \
-  --mode=comm_baseline \
-  --comm-op=hixl_host_write_hbm \
-  --bytes=256M \
-  --comm-iters=32 \
-  --warmup=1 \
-  --iters=5 \
-  --hixl-local-engine=127.0.0.1:16001 \
-  --hixl-server-engine=127.0.0.1:16000 \
-  --hixl-protocols=ub_ctp:host,ub_ctp:device \
-  --hixl-source-local-comm-res="${SRC_LCR}" \
-  --hixl-target-local-comm-res="${TGT_LCR}"
-```
-
-UBC/EID 读 target Device HBM：
-
-```bash
-./build-a5-hixl/rdma_urma_bench \
-  --device=${DEVICE_ID} \
-  --mode=comm_baseline \
-  --comm-op=hixl_host_read_hbm \
-  --bytes=256M \
-  --comm-iters=32 \
-  --warmup=1 \
-  --iters=5 \
-  --hixl-local-engine=127.0.0.1:16001 \
-  --hixl-server-engine=127.0.0.1:16000 \
-  --hixl-protocols=ub_ctp:host,ub_ctp:device \
-  --hixl-source-local-comm-res="${SRC_LCR}" \
-  --hixl-target-local-comm-res="${TGT_LCR}"
-```
-
-这对应老师脚本里的方向：
-
-```text
-source/local: HOST_EID, placement=host, RegisterMem(MEM_HOST, host buffer)
-target/peer:  DEVICE_EID, placement=device, RegisterMem(MEM_DEVICE, target HBM)
-TransferSync(WRITE): host buffer -> target device HBM
-TransferSync(READ):  target device HBM -> host buffer
-```
-
-如果 UBC/EID 方式报 LocalCommRes、endpoint 或建链错误，优先对照老师给的 `hixl_send_ubc_ring` 参数确认 `HOST_EID`、`DEVICE_EID`、`DEVICE_ID` 是否匹配同一对已知可通的 NPU/CPU 对。`HOST_DEV`、`DEVICE_DEV`、`EID_INDEX` 是底层 URMA/HCOMM 示例里的设备选择信息；HIXL LocalCommRes 里目前直接使用的是 EID。
 
 #### 5.3 自定义 LocalCommRes
 
@@ -577,7 +535,73 @@ hixl_host_write_hbm/read_hbm:
 
 如果 RoCE/IP 方式报建链或 LocalCommRes 错误，优先拿同一组 RoCE IP 去跑 `a5-sendrecv-transport-hacking/hixl/benchmarks/comm_benchmark` 的 `H2rD` / `rD2H`，因为它是 HIXL 官方 benchmark 里最接近本测试 write/read 语义的参考。如果 UBC/EID 方式报错，优先回到老师给的 `hixl_send_ubc_ring` 脚本确认这组 `HOST_EID/DEVICE_EID/DEVICE_ID` 本身仍然可通。
 
-### 6. HCOMM Host endpoint smoke
+### 6. HCOMM primitive UBC/EID 写读 HBM
+
+这条路径是当前对齐老师 `hixl_send_ubc_ring` 思路的 write/read 版本：
+
+```text
+Host endpoint(client, COMM_ENGINE_CPU)
+  注册 Host DRAM：COMM_MEM_TYPE_HOST
+
+Device endpoint(server, COMM_ENGINE_AICPU)
+  注册 target HBM：COMM_MEM_TYPE_DEVICE
+
+Host 侧拿到远端 device_hbm 后：
+  HcommWriteOnThread: Host DRAM -> Device HBM
+  HcommReadOnThread:  Device HBM -> Host DRAM
+  HcommChannelFence:  等待传输完成
+```
+
+先设置老师脚本里确认可通的 EID 和 device id：
+
+```bash
+export DEVICE_ID=6
+export DEVICE_PHY_ID=6
+export DEVICE_EID=000000000000020000100000df00c101
+export HOST_EID=00000000003f030000100000df080b01
+```
+
+HCOMM primitive 写 target Device HBM：
+
+```bash
+./build-a5-hcomm/rdma_urma_bench \
+  --device=${DEVICE_ID} \
+  --mode=comm_baseline \
+  --comm-op=hcomm_host_write_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hcomm-protocol=ubc_ctp \
+  --hcomm-host-addr=${HOST_EID} \
+  --hcomm-device-addr=${DEVICE_EID} \
+  --hcomm-device-phy-id=${DEVICE_PHY_ID} \
+  --hcomm-port=17000
+```
+
+HCOMM primitive 读 target Device HBM：
+
+```bash
+./build-a5-hcomm/rdma_urma_bench \
+  --device=${DEVICE_ID} \
+  --mode=comm_baseline \
+  --comm-op=hcomm_host_read_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hcomm-protocol=ubc_ctp \
+  --hcomm-host-addr=${HOST_EID} \
+  --hcomm-device-addr=${DEVICE_EID} \
+  --hcomm-device-phy-id=${DEVICE_PHY_ID} \
+  --hcomm-port=17000
+```
+
+如果要做干涉测试，把 `--mode=comm_baseline` 改成 `--mode=interference`，并补上 `--hbm-op=copy --tile=1024 --repeat=8 --blocks=8`。
+
+注意：这里的 `--device` 是 ACL runtime 使用的逻辑 device id；`--hcomm-device-phy-id` 是 HCOMM endpoint 使用的物理 device id。当前环境如果逻辑 id 和物理 id 一致，可以都填 6；如果不一致，以老师脚本或 HCOMM 可通样例里的 phy id 为准。
+
+### 7. HCOMM Host endpoint smoke
 
 最小 smoke 默认只验证 endpoint 创建和内存注册，不做真实传输，也不建 channel：
 
@@ -632,7 +656,7 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hcomm/rdma_urma_bench \
 
 `--hcomm-device-phy-id=-1` 时，代码会临时把 `--device` 当作 phy id 使用。如果 A5 上逻辑 device id 和物理 device id 不一致，需要显式传正确的物理 id。
 
-### 7. HIXL 干涉测试
+### 8. HIXL 干涉测试
 
 ```bash
 HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
@@ -658,7 +682,7 @@ AIV: copy HBM -> HBM
 HIXL: TransferSync(WRITE/READ) 读写 server 注册的 device HBM
 ```
 
-### 8. 干涉测试
+### 9. ACL 干涉测试
 
 ```bash
 ./build-a5/rdma_urma_bench \
@@ -712,13 +736,15 @@ interference       通信 + AICore HBM 并发
 ```text
 hixl_write_hbm
 hixl_read_hbm
+hixl_host_write_hbm
+hixl_host_read_hbm
+hcomm_host_write_hbm
+hcomm_host_read_hbm
 ```
 
 后续还可以继续补充的通信侧 `comm-op`：
 
 ```text
-hcomm_write
-hcomm_read
 hixl_put
 hixl_get
 ```

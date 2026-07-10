@@ -34,7 +34,7 @@ if(NOT EXISTS "${DEFAULT_HIXL_ROOT}/include/hixl/hixl.h")
 endif()
 set(HIXL_ROOT "${DEFAULT_HIXL_ROOT}" CACHE PATH
     "Path to HIXL source/install root")
-option(ENABLE_HCOMM "Enable HCOMM endpoint/memory smoke test mode" OFF)
+option(ENABLE_HCOMM "Enable HCOMM endpoint/memory smoke test and primitive comm ops" OFF)
 set(HCOMM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hcomm/hcomm-master/hcomm-master" CACHE PATH
     "Path to HCOMM source/install root")
 
@@ -217,6 +217,11 @@ if(ENABLE_HCOMM)
         PATHS ${HCOMM_INCLUDE_SEARCH_DIRS}
         NO_DEFAULT_PATH
     )
+    find_path(HCOMM_PRIMITIVES_INCLUDE_DIR
+        NAMES hcomm_primitives.h
+        PATHS ${HCOMM_INCLUDE_SEARCH_DIRS}
+        NO_DEFAULT_PATH
+    )
     find_library(HCOMM_LIB
         NAMES hcomm
         PATHS ${HCOMM_LIB_SEARCH_DIRS}
@@ -246,6 +251,12 @@ if(ENABLE_HCOMM)
             "Set -DHCOMM_ROOT=/path/to/hcomm source tree/install root. "
             "Checked include dirs: ${HCOMM_INCLUDE_SEARCH_DIRS}")
     endif()
+    if(NOT HCOMM_PRIMITIVES_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "ENABLE_HCOMM=ON but hcomm_primitives.h was not found. "
+            "Set -DHCOMM_ROOT=/path/to/hcomm source tree/install root. "
+            "Checked include dirs: ${HCOMM_INCLUDE_SEARCH_DIRS}")
+    endif()
     if(NOT HCOMM_LIB)
         message(FATAL_ERROR
             "ENABLE_HCOMM=ON but libhcomm.so was not found. "
@@ -253,6 +264,7 @@ if(ENABLE_HCOMM)
             "Checked library dirs: ${HCOMM_LIB_SEARCH_DIRS}")
     endif()
     message(STATUS "HCOMM_INCLUDE_DIR=${HCOMM_INCLUDE_DIR}")
+    message(STATUS "HCOMM_PRIMITIVES_INCLUDE_DIR=${HCOMM_PRIMITIVES_INCLUDE_DIR}")
     message(STATUS "HCOMM_LIB=${HCOMM_LIB}")
     message(STATUS "HCOMM_DEP_LIBS=${HCOMM_DEP_LIBS}")
     target_compile_definitions(rdma_urma_bench PRIVATE
@@ -260,6 +272,7 @@ if(ENABLE_HCOMM)
     )
     target_include_directories(rdma_urma_bench PRIVATE
         "${HCOMM_INCLUDE_DIR}"
+        "${HCOMM_PRIMITIVES_INCLUDE_DIR}"
     )
     target_link_libraries(rdma_urma_bench PRIVATE
         "${HCOMM_LIB}"
