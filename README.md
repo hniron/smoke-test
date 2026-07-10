@@ -174,6 +174,8 @@ hcomm_host_read_hbm
   建链和内存注册同上；Host 侧通过 `HcommReadOnThread` 从远端 HBM 读到 Host DRAM，并用 `HcommChannelFence` 等待完成。
 ```
 
+HCOMM Host endpoint 的 Host buffer 使用 4096 字节对齐的普通 Host DRAM（`posix_memalign`），再注册为 `COMM_MEM_TYPE_HOST`。这和 `hixl_send_ubc_ring.cpp` 里已跑通的 Host recv buffer 分配方式保持一致，避免 Host endpoint 场景下 `aclrtMallocHost` 内存注册失败。
+
 `hixl_write_hbm` / `hixl_read_hbm` 是 HIXL `TransferSync(WRITE/READ)` 的 device-source 路径。本工程同进程创建两个 HIXL engine，通信身份更准确地说是 `source engine(device5) <-> target engine(device0)`，实际传输内存是 `Host DRAM <-> device0 HBM`。
 
 `hixl_host_write_hbm` / `hixl_host_read_hbm` 是 HIXL Host placement 尝试路径。RoCE/IP Host placement 仍可作为对照；但在当前 A5 UBC/EID 场景下，纯 `source=HOST_EID/host, target=DEVICE_EID/device` 的 HIXL LocalCommRes 可能在 `target.Initialize` 阶段报 `endpoint_list is nullptr`。如果目标是老师说的 Host endpoint 通过 UBC/URMA write/read 本机 Device HBM，优先使用 `hcomm_host_write_hbm` / `hcomm_host_read_hbm`。
