@@ -155,8 +155,9 @@ hixl_read_hbm
 
 hixl_host_write_hbm
   需要 -DENABLE_HIXL=ON 编译。
-  这是 Host placement / Host NIC 版本，不再用 `--hixl-peer-device` 作为 source engine 的通信身份。
-  source/target engine 使用 `placement=host` 的 LocalCommRes，source 注册 Host DRAM，target 注册 device HBM，然后用 `TransferSync(WRITE)` 写 HBM。
+  这是 Host placement / Host endpoint 版本，不再用 `--hixl-peer-device` 作为 source engine 的通信身份。
+  可以走 RoCE/IP 的 `placement=host`，也可以显式传 UBC/URMA EID 版 LocalCommRes。
+  source 注册 Host DRAM，target 注册 device HBM，然后用 `TransferSync(WRITE)` 写 HBM。
 
 hixl_host_read_hbm
   需要 -DENABLE_HIXL=ON 编译。
@@ -165,7 +166,7 @@ hixl_host_read_hbm
 
 `hixl_write_hbm` / `hixl_read_hbm` 是当前验证 URMA/UB 读写 HBM 的 device-source 路径，不走 `send` 样例里的 `HixlSend` AICPU kernel。本工程使用 HIXL `RegisterMem(MEM_HOST/MEM_DEVICE) -> Connect -> TransferSync(WRITE/READ)`；默认协议配置为 `ub_ctp:host,ub_ctp:device`，让 HIXL 按 A5 可通样例的方式自动生成 Host/Device 侧通信资源。这个路径的建链/通信身份更准确地说是 `source engine(device5) <-> target engine(device0)`，实际传输内存是 `Host DRAM <-> device0 HBM`。
 
-`hixl_host_write_hbm` / `hixl_host_read_hbm` 是新增的 Host placement 路径，默认协议改成 `roce:host`，并按 `comm_benchmark` 的 A5 RoCE Host placement 方式生成 `LocalCommRes`：`endpoint_list[].protocol=roce`、`placement=host`、`comm_id=<host RoCE IP>`。这个路径不再让 device5 承载 source 通信资源，但 HIXL engine 仍需要在 ACL device context 下初始化，target HBM 仍来自 `--device`。`acl_write_hbm` 仍然只是本地 ACL runtime copy 对照项，不是 RDMA/URMA。
+`hixl_host_write_hbm` / `hixl_host_read_hbm` 是新增的 Host placement 路径。默认简化参数是 RoCE/IP 形式：`endpoint_list[].protocol=roce`、`placement=host`、`comm_id=<host RoCE IP>`。如果当前 A5 环境没有可用的 Host RoCE IP，但有 `HOST_EID/DEVICE_EID`，不要把 EID 填到 `--hixl-host-roce-ip`；应改用 `ub_ctp` 或 `ub_tp`，并通过 `--hixl-source-local-comm-res` / `--hixl-target-local-comm-res` 传完整 LocalCommRes。这个路径不再让 device5 承载 source 通信资源，但 HIXL engine 仍需要在 ACL device context 下初始化，target HBM 仍来自 `--device`。`acl_write_hbm` 仍然只是本地 ACL runtime copy 对照项，不是 RDMA/URMA。
 
 `hcomm_smoke` 是 HCOMM 低层接口的第一步验证，不和 `comm-op` 绑定。它验证的是：
 
@@ -424,17 +425,31 @@ TransferSync(READ): target device0 HBM -> host buffer
 
 如果 `hixl_example_d2rh --protocol=ub_ctp:host,ub_ctp:device --device=0,5 --version=1` 能通，而本工程 HIXL mode 不通，优先对比两边使用的 HIXL_ROOT、运行时 `libcann_hixl.so`、`libhcomm.so`、`libascend_hal.so` 和 `${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json` 是否一致。
 
-### 5. HIXL Host placement / Host NIC 版本
+### 5. HIXL Host placement / Host endpoint 版本
 
-这个版本对应新的 `hixl_host_write_hbm` / `hixl_host_read_hbm`。它参考 `benchmarks/comm_benchmark` 的 A5 RoCE Host placement 路径：Host buffer 用普通 `malloc`，LocalCommRes 显式写 `placement:"host"`，并设置 `HCCL_INTRA_ROCE_ENABLE=1`。
+这个版本对应新的 `hixl_host_write_hbm` / `hixl_host_read_hbm`。Host buffer 用普通 `malloc`，source 侧注册 `MEM_HOST`，target 侧注册 `MEM_DEVICE`，然后用 HIXL `TransferSync(WRITE/READ)` 做 HBM 读写。
 
-需要先拿到 Host RoCE/HCOMM 数据面 IP，不是 SSH 管理 IP。假设查到的是 `10.x.x.x`：
+这里要分清 `comm_id` 的格式：
+
+```text
+protocol=roce:
+  comm_id 填 Host RoCE 网卡 IP，例如 10.x.x.x
+
+protocol=ub_ctp / ub_tp:
+  comm_id 填 EID，例如 00000000003f030000100000df080b01
+```
+
+所以 `HOST_EID` 不能填到 `--hixl-host-roce-ip`。如果老师给的是 EID，就用下面的 UBC/EID 方式。
+
+#### 5.1 RoCE/IP 方式
+
+如果 A5 环境有 Host RoCE/HCOMM 数据面 IP，不是 SSH 管理 IP，可以用简化参数。假设查到的是 `10.x.x.x`：
 
 ```bash
 HOST_ROCE_IP=10.x.x.x
 ```
 
-Host placement 写 target Device0 HBM：
+RoCE/IP 写 target Device0 HBM：
 
 ```bash
 ./build-a5-hixl/rdma_urma_bench \
@@ -450,7 +465,7 @@ Host placement 写 target Device0 HBM：
   --hixl-host-roce-ip=${HOST_ROCE_IP}
 ```
 
-Host placement 读 target Device0 HBM：
+RoCE/IP 读 target Device0 HBM：
 
 ```bash
 ./build-a5-hixl/rdma_urma_bench \
@@ -466,11 +481,78 @@ Host placement 读 target Device0 HBM：
   --hixl-host-roce-ip=${HOST_ROCE_IP}
 ```
 
-默认情况下，本工程会给 source engine 和 target engine 都生成下面这种 Host placement LocalCommRes：
+使用 `--hixl-host-roce-ip` 时，本工程会给 source engine 和 target engine 都生成下面这种 Host placement LocalCommRes：
 
 ```json
 {"version":"1.3","net_instance_id":"default","endpoint_list":[{"protocol":"roce","comm_id":"10.x.x.x","placement":"host"}]}
 ```
+
+#### 5.2 UBC/URMA EID 方式
+
+如果当前环境没有可用的 `10.x.x.x` Host RoCE IP，但有类似下面这种 EID 配置：
+
+```bash
+export DEVICE_EID=000000000000020000100000df00c101
+export DEVICE_ID=6
+export HOST_EID=00000000003f030000100000df080b01
+```
+
+则不要使用 `--hixl-host-roce-ip`，而是显式传 source/target 两份 LocalCommRes：
+
+```bash
+SRC_LCR='{"version":"1.3","net_instance_id":"default","endpoint_list":[{"protocol":"ub_ctp","comm_id":"'"${HOST_EID}"'","placement":"host","dst_eid":"'"${DEVICE_EID}"'"}]}'
+
+TGT_LCR='{"version":"1.3","net_instance_id":"default","endpoint_list":[{"protocol":"ub_ctp","comm_id":"'"${DEVICE_EID}"'","placement":"device","dst_eid":"'"${HOST_EID}"'"}]}'
+```
+
+UBC/EID 写 target Device HBM：
+
+```bash
+./build-a5-hixl/rdma_urma_bench \
+  --device=${DEVICE_ID} \
+  --mode=comm_baseline \
+  --comm-op=hixl_host_write_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hixl-local-engine=127.0.0.1:16001 \
+  --hixl-server-engine=127.0.0.1:16000 \
+  --hixl-protocols=ub_ctp:host,ub_ctp:device \
+  --hixl-source-local-comm-res="${SRC_LCR}" \
+  --hixl-target-local-comm-res="${TGT_LCR}"
+```
+
+UBC/EID 读 target Device HBM：
+
+```bash
+./build-a5-hixl/rdma_urma_bench \
+  --device=${DEVICE_ID} \
+  --mode=comm_baseline \
+  --comm-op=hixl_host_read_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hixl-local-engine=127.0.0.1:16001 \
+  --hixl-server-engine=127.0.0.1:16000 \
+  --hixl-protocols=ub_ctp:host,ub_ctp:device \
+  --hixl-source-local-comm-res="${SRC_LCR}" \
+  --hixl-target-local-comm-res="${TGT_LCR}"
+```
+
+这对应老师脚本里的方向：
+
+```text
+source/local: HOST_EID, placement=host, RegisterMem(MEM_HOST, host buffer)
+target/peer:  DEVICE_EID, placement=device, RegisterMem(MEM_DEVICE, target HBM)
+TransferSync(WRITE): host buffer -> target device HBM
+TransferSync(READ):  target device HBM -> host buffer
+```
+
+如果 UBC/EID 方式报 LocalCommRes、endpoint 或建链错误，优先对照老师给的 `hixl_send_ubc_ring` 参数确认 `HOST_EID`、`DEVICE_EID`、`DEVICE_ID` 是否匹配同一对已知可通的 NPU/CPU 对。`HOST_DEV`、`DEVICE_DEV`、`EID_INDEX` 是底层 URMA/HCOMM 示例里的设备选择信息；HIXL LocalCommRes 里目前直接使用的是 EID。
+
+#### 5.3 自定义 LocalCommRes
 
 如果 A5 环境要求 source/target 使用不同的 Host endpoint 资源，或者不能接受同一个 RoCE IP 同进程创建两个 HIXL engine，就不要只用 `--hixl-host-roce-ip`，改成分别传：
 
@@ -487,11 +569,13 @@ hixl_write_hbm/read_hbm:
   数据层：Host DRAM <-> device0 HBM
 
 hixl_host_write_hbm/read_hbm:
-  通信身份层：source/target LocalCommRes 都声明 placement=host，走 Host NIC/Host placement 资源
-  数据层：Host DRAM <-> device0 HBM
+  通信身份层：source 不再由 device5 承载；source LocalCommRes 可以是 placement=host
+  RoCE/IP 简化写法里 source/target 都生成 placement=host
+  UBC/EID 写法里 source 是 HOST_EID/placement=host，target 是 DEVICE_EID/placement=device
+  数据层：Host DRAM <-> target device HBM
 ```
 
-如果这个 Host placement 版本报建链或 LocalCommRes 错误，优先拿同一组 RoCE IP 去跑 `a5-sendrecv-transport-hacking/hixl/benchmarks/comm_benchmark` 的 `H2rD` / `rD2H`，因为它是 HIXL 官方 benchmark 里最接近本测试 write/read 语义的参考。
+如果 RoCE/IP 方式报建链或 LocalCommRes 错误，优先拿同一组 RoCE IP 去跑 `a5-sendrecv-transport-hacking/hixl/benchmarks/comm_benchmark` 的 `H2rD` / `rD2H`，因为它是 HIXL 官方 benchmark 里最接近本测试 write/read 语义的参考。如果 UBC/EID 方式报错，优先回到老师给的 `hixl_send_ubc_ring` 脚本确认这组 `HOST_EID/DEVICE_EID/DEVICE_ID` 本身仍然可通。
 
 ### 6. HCOMM Host endpoint smoke
 
