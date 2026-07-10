@@ -167,11 +167,11 @@ hcomm_host_write_hbm
   需要 -DENABLE_HCOMM=ON 编译。
   参考 `hixl_send_ubc_ring` 的底层 HCOMM 写法，不走 HIXL `TransferSync`。
   同进程创建 Host endpoint(client, COMM_ENGINE_CPU) 和 Device endpoint(server, COMM_ENGINE_AICPU)。
-  Host 注册 Host DRAM，Device 注册 target HBM；Host 侧通过 `HcommWriteOnThread` 写远端 HBM，并用 `HcommChannelFence` 等待完成。
+  Host 注册 Host DRAM，Device 注册 target HBM；Host 侧通过 `HcommWriteNbi` 写远端 HBM，并用 `HcommChannelFence` 等待完成。
 
 hcomm_host_read_hbm
   需要 -DENABLE_HCOMM=ON 编译。
-  建链和内存注册同上；Host 侧通过 `HcommReadOnThread` 从远端 HBM 读到 Host DRAM，并用 `HcommChannelFence` 等待完成。
+  建链和内存注册同上；Host 侧通过 `HcommReadNbi` 从远端 HBM 读到 Host DRAM，并用 `HcommChannelFence` 等待完成。
 ```
 
 HCOMM Host endpoint 的 Host buffer 使用 4096 字节对齐的普通 Host DRAM（`posix_memalign`），再注册为 `COMM_MEM_TYPE_HOST`。这和 `hixl_send_ubc_ring.cpp` 里已跑通的 Host recv buffer 分配方式保持一致，避免 Host endpoint 场景下 `aclrtMallocHost` 内存注册失败。
@@ -549,8 +549,8 @@ Device endpoint(server, COMM_ENGINE_AICPU)
   注册 target HBM：COMM_MEM_TYPE_DEVICE
 
 Host 侧拿到远端 device_hbm 后：
-  HcommWriteOnThread: Host DRAM -> Device HBM
-  HcommReadOnThread:  Device HBM -> Host DRAM
+  HcommWriteNbi: Host DRAM -> Device HBM
+  HcommReadNbi:  Device HBM -> Host DRAM
   HcommChannelFence:  等待传输完成
 ```
 
