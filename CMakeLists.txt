@@ -219,7 +219,6 @@ if(ENABLE_HCOMM)
     )
     set(HCOMM_DEP_LIBS "")
     foreach(_hcomm_dep IN ITEMS
-        hccl
         mmpa
         ascendalog
         c_sec
