@@ -172,13 +172,17 @@ hcomm_host_write_hbm
 hcomm_host_read_hbm
   需要 -DENABLE_HCOMM=ON 编译。
   建链和内存注册同上；Host 侧通过 `HcommReadNbi` 从远端 HBM 读到 Host DRAM，并用 `HcommChannelFence` 等待完成。
+
+hcomm_host_rw_hbm
+  需要 -DENABLE_HCOMM=ON 编译。
+  建链和内存注册同上；Host 侧按传输次数交替执行 `HcommWriteNbi` 和 `HcommReadNbi`，每次传输后用 `HcommChannelFence` 等待完成。
 ```
 
 HCOMM Host endpoint 的 Host buffer 使用 4096 字节对齐的普通 Host DRAM（`posix_memalign`），再注册为 `COMM_MEM_TYPE_HOST`。这和 `hixl_send_ubc_ring.cpp` 里已跑通的 Host recv buffer 分配方式保持一致，避免 Host endpoint 场景下 `aclrtMallocHost` 内存注册失败。
 
 `hixl_write_hbm` / `hixl_read_hbm` 是 HIXL `TransferSync(WRITE/READ)` 的 device-source 路径。本工程同进程创建两个 HIXL engine，通信身份更准确地说是 `source engine(device5) <-> target engine(device0)`，实际传输内存是 `Host DRAM <-> device0 HBM`。
 
-`hixl_host_write_hbm` / `hixl_host_read_hbm` 是 HIXL Host placement 尝试路径。RoCE/IP Host placement 仍可作为对照；但在当前 A5 UBC/EID 场景下，纯 `source=HOST_EID/host, target=DEVICE_EID/device` 的 HIXL LocalCommRes 可能在 `target.Initialize` 阶段报 `endpoint_list is nullptr`。如果目标是老师说的 Host endpoint 通过 UBC/URMA write/read 本机 Device HBM，优先使用 `hcomm_host_write_hbm` / `hcomm_host_read_hbm`。
+`hixl_host_write_hbm` / `hixl_host_read_hbm` 是 HIXL Host placement 尝试路径。RoCE/IP Host placement 仍可作为对照；但在当前 A5 UBC/EID 场景下，纯 `source=HOST_EID/host, target=DEVICE_EID/device` 的 HIXL LocalCommRes 可能在 `target.Initialize` 阶段报 `endpoint_list is nullptr`。如果目标是老师说的 Host endpoint 通过 UBC/URMA write/read 本机 Device HBM，优先使用 `hcomm_host_write_hbm` / `hcomm_host_read_hbm` / `hcomm_host_rw_hbm`。
 
 `hcomm_smoke` 是 HCOMM 低层接口的第一步验证，不和 `comm-op` 绑定。它验证的是：
 
@@ -297,7 +301,7 @@ cmake -S . -B build-a5-hcomm \
 cmake --build build-a5-hcomm -j
 ```
 
-如果 HCOMM 头文件和 `libhcomm.so` 已经在 CANN 路径下，`-DHCOMM_ROOT=...` 可以省略；CMake 会从 `${ASCEND_HOME_PATH}/aarch64-linux/include`、`${ASCEND_HOME_PATH}/aarch64-linux/lib64` 等路径查找。构建 `hcomm_host_write_hbm/read_hbm` 需要同时能找到 `hcomm_res.h`、`hcomm_primitives.h` 和 `libhcomm.so`。
+如果 HCOMM 头文件和 `libhcomm.so` 已经在 CANN 路径下，`-DHCOMM_ROOT=...` 可以省略；CMake 会从 `${ASCEND_HOME_PATH}/aarch64-linux/include`、`${ASCEND_HOME_PATH}/aarch64-linux/lib64` 等路径查找。构建 `hcomm_host_write_hbm/read_hbm/rw_hbm` 需要同时能找到 `hcomm_res.h`、`hcomm_primitives.h` 和 `libhcomm.so`。
 
 ## 运行示例
 
@@ -549,10 +553,13 @@ Device endpoint(server, COMM_ENGINE_AICPU)
   注册 target HBM：COMM_MEM_TYPE_DEVICE
 
 Host 侧拿到远端 device_hbm 后：
-  HcommWriteNbi: Host DRAM -> Device HBM
-  HcommReadNbi:  Device HBM -> Host DRAM
-  HcommChannelFence:  等待传输完成
+  hcomm_host_write_hbm: HcommWriteNbi，Host DRAM -> Device HBM
+  hcomm_host_read_hbm:  HcommReadNbi， Device HBM -> Host DRAM
+  hcomm_host_rw_hbm:    按传输次数交替 Write / Read
+  HcommChannelFence:    每次传输后等待完成
 ```
+
+7580 行开始的 A5 log 已验证 `hcomm_host_write_hbm` 能跑通，配置为 `bytes=256M`、`comm-iters=32`，每轮总传输 8 GiB，平均带宽约 `31.17 GB/s`。
 
 先设置老师脚本里确认可通的 EID 和 device id：
 
@@ -563,7 +570,7 @@ export DEVICE_EID=000000000000020000100000df00c101
 export HOST_EID=00000000003f030000100000df080b01
 ```
 
-HCOMM primitive 写 target Device HBM：
+HCOMM primitive 写 target Device HBM，已在 A5 上跑通：
 
 ```bash
 ./build-a5-hcomm/rdma_urma_bench \
@@ -599,7 +606,61 @@ HCOMM primitive 读 target Device HBM：
   --hcomm-port=17000
 ```
 
-如果要做干涉测试，把 `--mode=comm_baseline` 改成 `--mode=interference`，并补上 `--hbm-op=copy --tile=1024 --repeat=8 --blocks=8`。
+HCOMM primitive 读写混合访问 target Device HBM：
+
+```bash
+./build-a5-hcomm/rdma_urma_bench \
+  --device=${DEVICE_ID} \
+  --mode=comm_baseline \
+  --comm-op=hcomm_host_rw_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hcomm-protocol=ubc_ctp \
+  --hcomm-host-addr=${HOST_EID} \
+  --hcomm-device-addr=${DEVICE_EID} \
+  --hcomm-device-phy-id=${DEVICE_PHY_ID} \
+  --hcomm-port=17000
+```
+
+`hcomm_host_rw_hbm` 中 `comm-iters=32` 表示 32 次 URMA 传输操作，不是 32 对读写；当前实现按次数交替，偶数次 write、奇数次 read，所以 `comm-iters=32` 对应 16 次 write + 16 次 read，总传输字节仍是 `32 * bytes`。
+
+HCOMM primitive + AIV HBM 干涉测试，Host write Device HBM，同时 AIV copy HBM：
+
+```bash
+./build-a5-hcomm/rdma_urma_bench \
+  --device=${DEVICE_ID} \
+  --mode=interference \
+  --hbm-op=copy \
+  --comm-op=hcomm_host_write_hbm \
+  --bytes=256M \
+  --tile=1024 \
+  --repeat=8 \
+  --blocks=8 \
+  --warmup=1 \
+  --iters=5 \
+  --hcomm-protocol=ubc_ctp \
+  --hcomm-host-addr=${HOST_EID} \
+  --hcomm-device-addr=${DEVICE_EID} \
+  --hcomm-device-phy-id=${DEVICE_PHY_ID} \
+  --hcomm-port=17000
+```
+
+Host read 或 read/write 混合的干涉测试，只需要替换 `--comm-op`：
+
+```bash
+--comm-op=hcomm_host_read_hbm
+--comm-op=hcomm_host_rw_hbm
+```
+
+AIV 侧 `--hbm-op` 可选：
+
+```text
+read   AIV 只读 HBM
+write  AIV 只写 HBM
+copy   AIV 读 HBM 后再写 HBM
+```
 
 注意：这里的 `--device` 是 ACL runtime 使用的逻辑 device id；`--hcomm-device-phy-id` 是 HCOMM endpoint 使用的物理 device id。当前环境如果逻辑 id 和物理 id 一致，可以都填 6；如果不一致，以老师脚本或 HCOMM 可通样例里的 phy id 为准。
 
@@ -742,6 +803,7 @@ hixl_host_write_hbm
 hixl_host_read_hbm
 hcomm_host_write_hbm
 hcomm_host_read_hbm
+hcomm_host_rw_hbm
 ```
 
 后续还可以继续补充的通信侧 `comm-op`：
