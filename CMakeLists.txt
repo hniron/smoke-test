@@ -28,7 +28,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(NPU_ARCH "dav-3510" CACHE STRING "Ascend C NPU arch, for example dav-3510 for A5/Atlas 350")
 set(ASC_ARCH_FLAG "--npu-arch" CACHE STRING "Ascend C arch option, for example --npu-arch or --cce-aicore-arch")
 option(ENABLE_HIXL "Enable HIXL based host/device transfer comm ops" OFF)
-set(HIXL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hixl/hixl-master/hixl-master" CACHE PATH
+set(DEFAULT_HIXL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../a5-sendrecv-transport-hacking/hixl")
+if(NOT EXISTS "${DEFAULT_HIXL_ROOT}/include/hixl/hixl.h")
+    set(DEFAULT_HIXL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hixl/hixl-master/hixl-master")
+endif()
+set(HIXL_ROOT "${DEFAULT_HIXL_ROOT}" CACHE PATH
     "Path to HIXL source/install root")
 option(ENABLE_HCOMM "Enable HCOMM endpoint/memory smoke test mode" OFF)
 set(HCOMM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hcomm/hcomm-master/hcomm-master" CACHE PATH
@@ -141,6 +145,7 @@ if(ENABLE_HIXL)
         metadef
         error_manager
         hcomm
+        ascend_hal
         mmpa
         ascendalog
         c_sec

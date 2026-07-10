@@ -143,16 +143,29 @@ acl_write_hbm
 
 hixl_write_hbm
   需要 -DENABLE_HIXL=ON 编译。
-  同进程创建 HIXL server/client 两个 engine：server 注册本机 device HBM，client 注册 host buffer。
-  client 用 TransferSync(WRITE) 把 host buffer 写到 server 注册的 device HBM。
+  参考 A5 上已跑通的 `hixl_example_d2rh --protocol=ub_ctp:host,ub_ctp:device --device=0,5 --version=1`。
+  本工程同进程创建两个 HIXL engine：target engine 绑定 `--device` 并注册目标 HBM，source engine 绑定 `--hixl-peer-device` 并注册 host buffer。
+  source engine 用 `TransferSync(WRITE)` 把 host buffer 写到 target engine 注册的 device HBM。
+  注意：这里的 source engine 仍然绑定一个 NPU device；`MEM_HOST` 只表示 source 侧参与传输的内存是 Host DRAM，不等价于“Host CPU 自己作为纯通信 endpoint”。
 
 hixl_read_hbm
   需要 -DENABLE_HIXL=ON 编译。
-  同进程创建 HIXL server/client 两个 engine：server 注册本机 device HBM，client 注册 host buffer。
-  client 用 TransferSync(READ) 从 server 注册的 device HBM 读到 host buffer。
+  两个 engine 和注册方式同上。
+  source engine 用 `TransferSync(READ)` 从 target engine 注册的 device HBM 读到 host buffer。
+
+hixl_host_write_hbm
+  需要 -DENABLE_HIXL=ON 编译。
+  这是 Host placement / Host NIC 版本，不再用 `--hixl-peer-device` 作为 source engine 的通信身份。
+  source/target engine 使用 `placement=host` 的 LocalCommRes，source 注册 Host DRAM，target 注册 device HBM，然后用 `TransferSync(WRITE)` 写 HBM。
+
+hixl_host_read_hbm
+  需要 -DENABLE_HIXL=ON 编译。
+  Host placement 配置同上，用 `TransferSync(READ)` 从 target device HBM 读到 source host buffer。
 ```
 
-`hixl_write_hbm` / `hixl_read_hbm` 是为了验证“本机 Host endpoint 通过 HIXL/HCOMM 通信路径读写本机 Device HBM”。它和 `acl_write_hbm` 的差别是：`acl_write_hbm` 是本机 runtime copy；HIXL 路径会执行 `RegisterMem(MEM_HOST/MEM_DEVICE) -> Connect -> TransferSync(READ/WRITE)`。是否真的走 RoCE/UB/URMA，需要结合 HIXL 配置、`HCCL_INTRA_ROCE_ENABLE=1`、`local_comm_res` 和运行日志确认。
+`hixl_write_hbm` / `hixl_read_hbm` 是当前验证 URMA/UB 读写 HBM 的 device-source 路径，不走 `send` 样例里的 `HixlSend` AICPU kernel。本工程使用 HIXL `RegisterMem(MEM_HOST/MEM_DEVICE) -> Connect -> TransferSync(WRITE/READ)`；默认协议配置为 `ub_ctp:host,ub_ctp:device`，让 HIXL 按 A5 可通样例的方式自动生成 Host/Device 侧通信资源。这个路径的建链/通信身份更准确地说是 `source engine(device5) <-> target engine(device0)`，实际传输内存是 `Host DRAM <-> device0 HBM`。
+
+`hixl_host_write_hbm` / `hixl_host_read_hbm` 是新增的 Host placement 路径，默认协议改成 `roce:host`，并按 `comm_benchmark` 的 A5 RoCE Host placement 方式生成 `LocalCommRes`：`endpoint_list[].protocol=roce`、`placement=host`、`comm_id=<host RoCE IP>`。这个路径不再让 device5 承载 source 通信资源，但 HIXL engine 仍需要在 ACL device context 下初始化，target HBM 仍来自 `--device`。`acl_write_hbm` 仍然只是本地 ACL runtime copy 对照项，不是 RDMA/URMA。
 
 `hcomm_smoke` 是 HCOMM 低层接口的第一步验证，不和 `comm-op` 绑定。它验证的是：
 
@@ -189,15 +202,15 @@ cmake --build build-a5 -j
 
 ### A5 HIXL 构建命令
 
-HIXL 路径不是默认开启的，因为它需要先有 `libcann_hixl.so`。本仓当前 `hixl/hixl-master/hixl-master` 下有源码和头文件，但不一定已经编出 `.so`。
+HIXL 路径不是默认开启的，因为它需要先有 `libcann_hixl.so`，并且当前 URMA/UB host 路径要参考 A5 上已跑通的 `a5-sendrecv-transport-hacking/hixl` 版本。这个版本的样例 `hixl_example_d2rh --protocol=ub_ctp:host,ub_ctp:device --device=0,5 --version=1` 已验证可通。
 
-如果当前目标只是测试本工程里的 `hixl_write_hbm` / `hixl_read_hbm` baseline，只需要构建 HIXL 主库，不需要构建 HIXL 自带 examples。不要加 `--examples`，否则会额外编译 `aicpu_send_hcomm` 等 sample；这些 sample 依赖额外 HCOMM 头文件路径，和本 benchmark 的 baseline 测试无关。
+如果当前目标只是测试本工程里的 `hixl_write_hbm` / `hixl_read_hbm` baseline，只需要构建 HIXL 主库，不需要构建 HIXL 自带 examples。不要使用 `send` 路径替代本测试；本测试要走 HIXL `TransferSync(WRITE/READ)`。
 
-先在 HIXL 工程中构建 HIXL 主库，参考 `hixl/hixl-master/hixl-master/docs/build.md`：
+先在 HIXL 工程中构建 HIXL 主库，参考对应 HIXL 工程的 build 文档：
 
 ```bash
-# 按 A5 上实际 HIXL 源码目录填写；从你当前 log 看，这里通常是 /home/z00888267/hixl/hixl。
-hixl_root=/home/z00888267/hixl/hixl
+# 按 A5 上实际 HIXL 源码目录填写；优先使用已验证可通的 a5-sendrecv-transport-hacking/hixl。
+hixl_root=/home/z00888267/a5-sendrecv-transport-hacking/hixl
 cd "${hixl_root}"
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
 rm -rf build build_out
@@ -232,7 +245,7 @@ done
 ```bash
 # 按 A5 上实际 benchmark 工程目录填写。
 bench_root=/home/z00888267/rdma_urma_bench
-hixl_root=/home/z00888267/hixl/hixl
+hixl_root=/home/z00888267/a5-sendrecv-transport-hacking/hixl
 cd "${bench_root}"
 source /usr/local/Ascend/cann-9.1.T560/set_env.sh
 
@@ -332,12 +345,33 @@ comm_bw_GBps
 ```
 
 
-### 3. HIXL Host 写本机 Device HBM baseline
+### 3. HIXL/URMA MEM_HOST 写 target Device HBM baseline
 
-注意：当前 `rdma_urma_bench` 的 HIXL 实现是单进程内同时创建 client/server，并且二者使用同一个 `--device`。这种写法在 HIXL Connect 阶段会被判定为 self device，不是有效的 HIXL smoke 路径。下面命令仅保留参数形态，真正运行 HIXL baseline 需要把 client/server 拆成不同 rank/device endpoint。
+这条路径对齐老师说的 write/read 需求，不使用 `send`。默认配置参考已跑通的 A5 样例：
+
+```text
+hixl_example_d2rh --protocol=ub_ctp:host,ub_ctp:device --device=0,5 --version=1
+```
+
+本工程里的含义是：
+
+```text
+--device=0              target device，AICore HBM kernel 和被通信读写的 HBM 都在这里
+--hixl-peer-device=5    source/initiator engine 绑定的另一个 NPU device；不是 device5 HBM 参与传输
+--hixl-protocols=...    HIXL v2 自动生成 Host/Device placement 的 UB/URMA 通信资源
+```
+
+当前实现需要按两层理解：
+
+```text
+建链/通信身份层：source engine(device5) <-> target engine(device0)
+实际传输内存层：Host DRAM buffer <-> target device0 HBM buffer
+```
+
+写 HBM baseline：
 
 ```bash
-HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
+./build-a5-hixl/rdma_urma_bench \
   --device=0 \
   --mode=comm_baseline \
   --comm-op=hixl_write_hbm \
@@ -345,25 +379,28 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --comm-iters=32 \
   --warmup=1 \
   --iters=5 \
-  --hixl-local-engine=127.0.0.1 \
+  --hixl-peer-device=5 \
+  --hixl-local-engine=127.0.0.1:16001 \
   --hixl-server-engine=127.0.0.1:16000 \
-  --hixl-buffer-pool=0:0
+  --hixl-protocols=ub_ctp:host,ub_ctp:device
 ```
 
 这条路径对应：
 
 ```text
-HIXL client: MEM_HOST host buffer
-HIXL server: MEM_DEVICE device HBM buffer
-TransferSync(WRITE): host buffer -> device HBM
+source engine(device5): RegisterMem(MEM_HOST, host buffer)
+target engine(device0): RegisterMem(MEM_DEVICE, target HBM buffer)
+TransferSync(WRITE): host buffer -> target device0 HBM
 ```
 
-### 4. HIXL Host 读本机 Device HBM baseline
+严格说，这不是“纯 Host CPU endpoint 直接和 device0 endpoint 建链”。它是借助 peer-device HIXL engine 承载通信资源，但传输对象是 Host DRAM 和 target HBM。
 
-同样需要 client/server 属于不同 rank/device endpoint；当前单进程同 device 写法会被 HIXL 判成 self device。
+### 4. HIXL/URMA 读 target Device HBM baseline
+
+读 HBM baseline：
 
 ```bash
-HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
+./build-a5-hixl/rdma_urma_bench \
   --device=0 \
   --mode=comm_baseline \
   --comm-op=hixl_read_hbm \
@@ -371,22 +408,92 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --comm-iters=32 \
   --warmup=1 \
   --iters=5 \
-  --hixl-local-engine=127.0.0.1 \
+  --hixl-peer-device=5 \
+  --hixl-local-engine=127.0.0.1:16001 \
   --hixl-server-engine=127.0.0.1:16000 \
-  --hixl-buffer-pool=0:0
+  --hixl-protocols=ub_ctp:host,ub_ctp:device
 ```
 
 这条路径对应：
 
 ```text
-HIXL client: MEM_HOST host buffer
-HIXL server: MEM_DEVICE device HBM buffer
-TransferSync(READ): device HBM -> host buffer
+source engine(device5): RegisterMem(MEM_HOST, host buffer)
+target engine(device0): RegisterMem(MEM_DEVICE, target HBM buffer)
+TransferSync(READ): target device0 HBM -> host buffer
 ```
 
-要验证真实 RoCE/URMA 物理链路时，`--hixl-local-engine` / `--hixl-server-engine` 里的 IP 必须是 A5 环境上实际可绑定的 host/RoCE IP。先用 `ip -br addr`、`ifconfig`、`ibdev2netdev` 或环境已有配置确认网口；不能使用 README 里的占位网段地址，也不要使用不属于本机网口的 IP，否则 HIXL server 会在 Initialize 阶段 bind 失败。即使用 `127.0.0.1` 能 bind，当前单进程同 device 方案也会在 Connect 阶段因为 self device 被拒绝。
+如果 `hixl_example_d2rh --protocol=ub_ctp:host,ub_ctp:device --device=0,5 --version=1` 能通，而本工程 HIXL mode 不通，优先对比两边使用的 HIXL_ROOT、运行时 `libcann_hixl.so`、`libhcomm.so`、`libascend_hal.so` 和 `${ASCEND_HOME_PATH}/opp/built-in/op_impl/aicpu/config/libcann_hixl_kernel.json` 是否一致。
 
-### 5. HCOMM Host endpoint smoke
+### 5. HIXL Host placement / Host NIC 版本
+
+这个版本对应新的 `hixl_host_write_hbm` / `hixl_host_read_hbm`。它参考 `benchmarks/comm_benchmark` 的 A5 RoCE Host placement 路径：Host buffer 用普通 `malloc`，LocalCommRes 显式写 `placement:"host"`，并设置 `HCCL_INTRA_ROCE_ENABLE=1`。
+
+需要先拿到 Host RoCE/HCOMM 数据面 IP，不是 SSH 管理 IP。假设查到的是 `10.x.x.x`：
+
+```bash
+HOST_ROCE_IP=10.x.x.x
+```
+
+Host placement 写 target Device0 HBM：
+
+```bash
+./build-a5-hixl/rdma_urma_bench \
+  --device=0 \
+  --mode=comm_baseline \
+  --comm-op=hixl_host_write_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hixl-local-engine=127.0.0.1:16001 \
+  --hixl-server-engine=127.0.0.1:16000 \
+  --hixl-host-roce-ip=${HOST_ROCE_IP}
+```
+
+Host placement 读 target Device0 HBM：
+
+```bash
+./build-a5-hixl/rdma_urma_bench \
+  --device=0 \
+  --mode=comm_baseline \
+  --comm-op=hixl_host_read_hbm \
+  --bytes=256M \
+  --comm-iters=32 \
+  --warmup=1 \
+  --iters=5 \
+  --hixl-local-engine=127.0.0.1:16001 \
+  --hixl-server-engine=127.0.0.1:16000 \
+  --hixl-host-roce-ip=${HOST_ROCE_IP}
+```
+
+默认情况下，本工程会给 source engine 和 target engine 都生成下面这种 Host placement LocalCommRes：
+
+```json
+{"version":"1.3","net_instance_id":"default","endpoint_list":[{"protocol":"roce","comm_id":"10.x.x.x","placement":"host"}]}
+```
+
+如果 A5 环境要求 source/target 使用不同的 Host endpoint 资源，或者不能接受同一个 RoCE IP 同进程创建两个 HIXL engine，就不要只用 `--hixl-host-roce-ip`，改成分别传：
+
+```bash
+--hixl-source-local-comm-res='<source LocalCommRes json>'
+--hixl-target-local-comm-res='<target LocalCommRes json>'
+```
+
+这条路径和前面的 device5 source 路径区别是：
+
+```text
+hixl_write_hbm/read_hbm:
+  通信身份层：source engine(device5) <-> target engine(device0)
+  数据层：Host DRAM <-> device0 HBM
+
+hixl_host_write_hbm/read_hbm:
+  通信身份层：source/target LocalCommRes 都声明 placement=host，走 Host NIC/Host placement 资源
+  数据层：Host DRAM <-> device0 HBM
+```
+
+如果这个 Host placement 版本报建链或 LocalCommRes 错误，优先拿同一组 RoCE IP 去跑 `a5-sendrecv-transport-hacking/hixl/benchmarks/comm_benchmark` 的 `H2rD` / `rD2H`，因为它是 HIXL 官方 benchmark 里最接近本测试 write/read 语义的参考。
+
+### 6. HCOMM Host endpoint smoke
 
 最小 smoke 默认只验证 endpoint 创建和内存注册，不做真实传输，也不建 channel：
 
@@ -441,7 +548,7 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hcomm/rdma_urma_bench \
 
 `--hcomm-device-phy-id=-1` 时，代码会临时把 `--device` 当作 phy id 使用。如果 A5 上逻辑 device id 和物理 device id 不一致，需要显式传正确的物理 id。
 
-### 6. HIXL 干涉测试
+### 7. HIXL 干涉测试
 
 ```bash
 HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
@@ -467,7 +574,7 @@ AIV: copy HBM -> HBM
 HIXL: TransferSync(WRITE/READ) 读写 server 注册的 device HBM
 ```
 
-### 7. 干涉测试
+### 8. 干涉测试
 
 ```bash
 ./build-a5/rdma_urma_bench \
