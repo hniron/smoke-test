@@ -30,6 +30,9 @@ set(ASC_ARCH_FLAG "--npu-arch" CACHE STRING "Ascend C arch option, for example -
 option(ENABLE_HIXL "Enable HIXL based host/device transfer comm ops" OFF)
 set(HIXL_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hixl/hixl-master/hixl-master" CACHE PATH
     "Path to HIXL source/install root")
+option(ENABLE_HCOMM "Enable HCOMM endpoint/memory smoke test mode" OFF)
+set(HCOMM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hcomm/hcomm-master/hcomm-master" CACHE PATH
+    "Path to HCOMM source/install root")
 
 function(append_existing out_var)
     foreach(_dir ${ARGN})
@@ -177,6 +180,86 @@ if(ENABLE_HIXL)
     target_link_libraries(rdma_urma_bench PRIVATE
         "${HIXL_CANN_HIXL_LIB}"
         ${HIXL_DEP_LIBS}
+        pthread
+        rt
+        dl
+    )
+endif()
+
+if(ENABLE_HCOMM)
+    set(HCOMM_INCLUDE_SEARCH_DIRS
+        "${HCOMM_ROOT}/include"
+        "${HCOMM_ROOT}/output/include"
+        "${HCOMM_ROOT}/install/include"
+        ${CANN_INCLUDE_DIRS}
+    )
+    set(HCOMM_LIB_SEARCH_DIRS
+        "${HCOMM_ROOT}/build"
+        "${HCOMM_ROOT}/build/lib"
+        "${HCOMM_ROOT}/build/lib64"
+        "${HCOMM_ROOT}/build/src/framework"
+        "${HCOMM_ROOT}/build/src"
+        "${HCOMM_ROOT}/output/lib"
+        "${HCOMM_ROOT}/output/lib64"
+        "${HCOMM_ROOT}/install/lib"
+        "${HCOMM_ROOT}/install/lib64"
+        "${HCOMM_ROOT}/lib"
+        "${HCOMM_ROOT}/lib64"
+        ${CANN_LIB_DIRS}
+    )
+    find_path(HCOMM_INCLUDE_DIR
+        NAMES hcomm_res.h
+        PATHS ${HCOMM_INCLUDE_SEARCH_DIRS}
+        NO_DEFAULT_PATH
+    )
+    find_library(HCOMM_LIB
+        NAMES hcomm
+        PATHS ${HCOMM_LIB_SEARCH_DIRS}
+        NO_DEFAULT_PATH
+    )
+    set(HCOMM_DEP_LIBS "")
+    foreach(_hcomm_dep IN ITEMS
+        hccl
+        mmpa
+        ascendalog
+        c_sec
+        error_manager
+        runtime
+    )
+        find_library(_hcomm_dep_lib_${_hcomm_dep}
+            NAMES ${_hcomm_dep}
+            PATHS ${HCOMM_LIB_SEARCH_DIRS}
+            NO_DEFAULT_PATH
+        )
+        if(_hcomm_dep_lib_${_hcomm_dep})
+            list(APPEND HCOMM_DEP_LIBS "${_hcomm_dep_lib_${_hcomm_dep}}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES HCOMM_DEP_LIBS)
+    if(NOT HCOMM_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "ENABLE_HCOMM=ON but hcomm_res.h was not found. "
+            "Set -DHCOMM_ROOT=/path/to/hcomm source tree/install root. "
+            "Checked include dirs: ${HCOMM_INCLUDE_SEARCH_DIRS}")
+    endif()
+    if(NOT HCOMM_LIB)
+        message(FATAL_ERROR
+            "ENABLE_HCOMM=ON but libhcomm.so was not found. "
+            "Build/install HCOMM first or set -DHCOMM_ROOT. "
+            "Checked library dirs: ${HCOMM_LIB_SEARCH_DIRS}")
+    endif()
+    message(STATUS "HCOMM_INCLUDE_DIR=${HCOMM_INCLUDE_DIR}")
+    message(STATUS "HCOMM_LIB=${HCOMM_LIB}")
+    message(STATUS "HCOMM_DEP_LIBS=${HCOMM_DEP_LIBS}")
+    target_compile_definitions(rdma_urma_bench PRIVATE
+        ENABLE_HCOMM=1
+    )
+    target_include_directories(rdma_urma_bench PRIVATE
+        "${HCOMM_INCLUDE_DIR}"
+    )
+    target_link_libraries(rdma_urma_bench PRIVATE
+        "${HCOMM_LIB}"
+        ${HCOMM_DEP_LIBS}
         pthread
         rt
         dl

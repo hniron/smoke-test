@@ -115,7 +115,7 @@ CMakeLists.txt
 bench_main.asc
 ```
 
-支持三类 mode：
+支持四类 mode：
 
 ```text
 hbm_baseline
@@ -126,6 +126,11 @@ comm_baseline
 
 interference
   AIV HBM kernel 和通信压力源并发运行，测 AIV HBM 带宽下降和通信侧带宽。
+
+hcomm_smoke
+  需要 -DENABLE_HCOMM=ON 编译。
+  只做 HCOMM Host endpoint / Device endpoint 创建和 Host/HBM 内存注册验证。
+  默认不做真实传输，也不默认建 channel。
 ```
 
 当前支持的 `comm-op`：
@@ -148,6 +153,18 @@ hixl_read_hbm
 ```
 
 `hixl_write_hbm` / `hixl_read_hbm` 是为了验证“本机 Host endpoint 通过 HIXL/HCOMM 通信路径读写本机 Device HBM”。它和 `acl_write_hbm` 的差别是：`acl_write_hbm` 是本机 runtime copy；HIXL 路径会执行 `RegisterMem(MEM_HOST/MEM_DEVICE) -> Connect -> TransferSync(READ/WRITE)`。是否真的走 RoCE/UB/URMA，需要结合 HIXL 配置、`HCCL_INTRA_ROCE_ENABLE=1`、`local_comm_res` 和运行日志确认。
+
+`hcomm_smoke` 是 HCOMM 低层接口的第一步验证，不和 `comm-op` 绑定。它验证的是：
+
+```text
+HcommEndpointCreate(ENDPOINT_LOC_TYPE_HOST)
+HcommMemReg(COMM_MEM_TYPE_HOST)
+HcommEndpointCreate(ENDPOINT_LOC_TYPE_DEVICE)
+HcommMemReg(COMM_MEM_TYPE_DEVICE)
+可选：HcommChannelCreate(..., COMM_ENGINE_CPU, ...)
+```
+
+这个 mode 的目标不是测带宽，而是确认 A5 上 HCOMM basic resource API 是否真的支持“Host 自己作为 endpoint + Host 内存注册 + Device HBM 注册”这条路径。
 
 ## A5 构建命令
 
@@ -231,6 +248,31 @@ cmake --build build-a5-hixl -j
 
 `HIXL_ROOT` 必须指向 A5 上真实存在的 HIXL 源码/构建目录，里面应该有 `include/hixl/hixl.h` 和 `build/src/hixl/libcann_hixl.so`。如果已经通过 run 包把 HIXL 安装进 CANN，本工程的 CMake 也会从 `${ASCEND_HOME_PATH}/aarch64-linux/include` 和 `${ASCEND_HOME_PATH}/aarch64-linux/lib64` 查找 HIXL。
 
+### A5 HCOMM smoke 构建命令
+
+如果 A5 环境已经支持 HCOMM，可以直接构建本工程的 HCOMM 版本：
+
+```bash
+# 按 A5 上实际 benchmark 工程目录填写。
+bench_root=/home/z00888267/rdma_urma_bench
+# 如果 HCOMM 已安装进 CANN，可以不设置 HCOMM_ROOT；否则指向本机 hcomm 源码或安装根目录。
+hcomm_root=/home/z00888267/hcomm/hcomm
+
+cd "${bench_root}"
+source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+
+rm -rf build-a5-hcomm
+cmake -S . -B build-a5-hcomm \
+  -DCANN_INSTALL_PATH=/usr/local/Ascend/cann-9.1.T560 \
+  -DNPU_ARCH=dav-3510 \
+  -DASC_ARCH_FLAG=--npu-arch \
+  -DENABLE_HCOMM=ON \
+  -DHCOMM_ROOT="${hcomm_root}"
+cmake --build build-a5-hcomm -j
+```
+
+如果 HCOMM 头文件和 `libhcomm.so` 已经在 CANN 路径下，`-DHCOMM_ROOT=...` 可以省略；CMake 会从 `${ASCEND_HOME_PATH}/aarch64-linux/include`、`${ASCEND_HOME_PATH}/aarch64-linux/lib64` 等路径查找。
+
 ## 运行示例
 
 ### 1. AIV HBM baseline
@@ -292,6 +334,8 @@ comm_bw_GBps
 
 ### 3. HIXL Host 写本机 Device HBM baseline
 
+注意：当前 `rdma_urma_bench` 的 HIXL 实现是单进程内同时创建 client/server，并且二者使用同一个 `--device`。这种写法在 HIXL Connect 阶段会被判定为 self device，不是有效的 HIXL smoke 路径。下面命令仅保留参数形态，真正运行 HIXL baseline 需要把 client/server 拆成不同 rank/device endpoint。
+
 ```bash
 HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --device=0 \
@@ -301,8 +345,8 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --comm-iters=32 \
   --warmup=1 \
   --iters=5 \
-  --hixl-local-engine=10.10.10.0 \
-  --hixl-server-engine=10.10.10.0:16000 \
+  --hixl-local-engine=127.0.0.1 \
+  --hixl-server-engine=127.0.0.1:16000 \
   --hixl-buffer-pool=0:0
 ```
 
@@ -316,6 +360,8 @@ TransferSync(WRITE): host buffer -> device HBM
 
 ### 4. HIXL Host 读本机 Device HBM baseline
 
+同样需要 client/server 属于不同 rank/device endpoint；当前单进程同 device 写法会被 HIXL 判成 self device。
+
 ```bash
 HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --device=0 \
@@ -325,8 +371,8 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --comm-iters=32 \
   --warmup=1 \
   --iters=5 \
-  --hixl-local-engine=10.10.10.0 \
-  --hixl-server-engine=10.10.10.0:16000 \
+  --hixl-local-engine=127.0.0.1 \
+  --hixl-server-engine=127.0.0.1:16000 \
   --hixl-buffer-pool=0:0
 ```
 
@@ -338,9 +384,64 @@ HIXL server: MEM_DEVICE device HBM buffer
 TransferSync(READ): device HBM -> host buffer
 ```
 
-`10.10.10.0` 需要替换成 A5 环境上实际可用的 host/RoCE IP。先用 `ibdev2netdev`、`ifconfig` 或环境已有配置确认网口。用 `127.0.0.1` 可以做功能烟测，但不能直接证明真实 RoCE/URMA 物理链路。
+要验证真实 RoCE/URMA 物理链路时，`--hixl-local-engine` / `--hixl-server-engine` 里的 IP 必须是 A5 环境上实际可绑定的 host/RoCE IP。先用 `ip -br addr`、`ifconfig`、`ibdev2netdev` 或环境已有配置确认网口；不能使用 README 里的占位网段地址，也不要使用不属于本机网口的 IP，否则 HIXL server 会在 Initialize 阶段 bind 失败。即使用 `127.0.0.1` 能 bind，当前单进程同 device 方案也会在 Connect 阶段因为 self device 被拒绝。
 
-### 5. HIXL 干涉测试
+### 5. HCOMM Host endpoint smoke
+
+最小 smoke 默认只验证 endpoint 创建和内存注册，不做真实传输，也不建 channel：
+
+```bash
+./build-a5-hcomm/rdma_urma_bench \
+  --device=0 \
+  --mode=hcomm_smoke \
+  --bytes=4K \
+  --hcomm-protocol=roce \
+  --hcomm-host-ip=<A5_host_or_roce_ip> \
+  --hcomm-device-ip=<device_or_roce_ip> \
+  --hcomm-device-phy-id=0 \
+  --hcomm-create-channel=0
+```
+
+输出里重点看这些步骤：
+
+```text
+hcomm_smoke_step=host_endpoint_create ret=0
+hcomm_smoke_step=device_endpoint_create ret=0
+hcomm_smoke_step=host_mem_reg ret=0
+hcomm_smoke_step=device_mem_reg ret=0
+hcomm_smoke_step=cleanup ret=0
+```
+
+如果这些步骤都是 `ret=0`，说明当前 A5 环境至少已经打通：
+
+```text
+Host endpoint + Host DRAM 注册
+Device endpoint + Device HBM 注册
+```
+
+`hcomm_smoke` 输出里的 `comm_us` 是这几个 HCOMM resource 操作的总耗时，只用于观察 smoke 本身，不代表 RDMA/URMA 带宽或真实传输时延。
+
+如果要进一步试探 `HcommChannelCreate`，显式打开：
+
+```bash
+HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hcomm/rdma_urma_bench \
+  --device=0 \
+  --mode=hcomm_smoke \
+  --bytes=4K \
+  --hcomm-protocol=roce \
+  --hcomm-host-ip=<A5_host_or_roce_ip> \
+  --hcomm-device-ip=<device_or_roce_ip> \
+  --hcomm-device-phy-id=0 \
+  --hcomm-create-channel=1 \
+  --hcomm-role=server \
+  --hcomm-port=17000
+```
+
+注意：`HcommChannelCreate` 内部会等待 channel ready。若 A5 的 HCOMM 需要成对 endpoint、socket role、真实对端或额外 rank 配置，这一步可能超时；这不等价于前面的 endpoint/mem register smoke 失败。
+
+`--hcomm-device-phy-id=-1` 时，代码会临时把 `--device` 当作 phy id 使用。如果 A5 上逻辑 device id 和物理 device id 不一致，需要显式传正确的物理 id。
+
+### 6. HIXL 干涉测试
 
 ```bash
 HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
@@ -354,8 +455,8 @@ HCCL_INTRA_ROCE_ENABLE=1 ./build-a5-hixl/rdma_urma_bench \
   --blocks=8 \
   --warmup=1 \
   --iters=5 \
-  --hixl-local-engine=10.10.10.0 \
-  --hixl-server-engine=10.10.10.0:16000 \
+  --hixl-local-engine=127.0.0.1 \
+  --hixl-server-engine=127.0.0.1:16000 \
   --hixl-buffer-pool=0:0
 ```
 
@@ -366,7 +467,7 @@ AIV: copy HBM -> HBM
 HIXL: TransferSync(WRITE/READ) 读写 server 注册的 device HBM
 ```
 
-### 6. 干涉测试
+### 7. 干涉测试
 
 ```bash
 ./build-a5/rdma_urma_bench \
