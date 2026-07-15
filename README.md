@@ -195,3 +195,24 @@ comm_bytes    程序统计的逻辑传输字节数
 ```
 
 `comm_bw_GBps` 是根据逻辑传输字节数和耗时计算出的有效带宽，不等同于硬件计数器统计的物理 HBM 流量。
+
+### HCOMM/URMA 多通道参数
+
+使用 `--hcomm-channels=N` 创建 N 对 Host/Device channel，并由 N 个 Host worker 并发传输。Host DRAM 和 Device HBM 会按 channel 切分为互不重叠的区域；内存只注册一次，多个 channel 复用远端内存描述。
+
+保持总传输量不变，依次测试：
+
+```bash
+--hcomm-channels=1
+--hcomm-channels=2
+--hcomm-channels=4
+--hcomm-channels=8
+```
+
+例如在 HCOMM 命令中增加：
+
+```bash
+--bytes=256M --comm-iters=32 --hcomm-channels=4
+```
+
+`comm-iters` 表示所有 channel 合计的操作数，不会因为增加 channel 而自动增加总传输字节数。每条 channel 使用独立端口 `hcomm-port + channel_index`。
