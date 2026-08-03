@@ -138,8 +138,12 @@ delay_calib
 
 host_aiv_roundtrip
   Host CPU 写 request flag 到 mapped host memory，AIV 在线轮询 request，
-  AIV 看到后写 ack flag，Host CPU 再轮询 ack。
-  这个 mode 用来验证 CPU->AIV->CPU 双向 flag 同步路径，并测 roundtrip 时间。
+  AIV 看到后写 ack flag，Host CPU 再轮询 ack。现在同时返回每个 event 的
+  AIV 设备时间戳，用于拟合 Host/AIV 时钟映射和后续单向时延测试。
+
+aiv_host_paced_timestamp
+  先自动执行 roundtrip 时钟校准，再由 AIV 按 delay-iters 间隔写设备时间戳和 ready flag，
+  Host CPU 轮询 ready flag 后计算 AIV->Host 单向观测时延。
 
 host_aiv_roundtrip_fast
   去掉 host_aiv_roundtrip 热路径里的诊断统计和每轮 timeout/status 检查，
@@ -349,6 +353,7 @@ flag_latency
 delay_calib
 host_aiv_roundtrip
 host_aiv_roundtrip_fast
+aiv_host_paced_timestamp
 aiv_snoop
 all  # 只组合 host_poll_plain + host_poll_postcheck
 ```
@@ -512,6 +517,155 @@ ready / final_req / final_ack / final_status / abort
 ```
 
 如果出现 `status=2`、`final_ack < final_req` 或 `aiv_poll_iters_avg` 接近 `--aiv-poll-limit`，优先判断 CPU 写 Host DRAM 后 AIV 在线读取可见性不成立，或者需要平台提供额外的 cache flush / invalidate / coherent mapping 语义。这个 mode 里保留 `--aiv-poll-limit`，就是为了避免 AIV 一直轮询看不到 Host request 时整条 stream 卡死。
+
+### Roundtrip 时钟校准和 AIV->Host 单向观测时延
+
+`host_aiv_roundtrip` 现在除了原来的 request/ack flag 外，还会让 AIV 为每个 event 记录两个设备侧时间戳：
+
+```text
+D2: AIV 看到 Host request 后的 GetSystemCycle()
+D3: AIV 写 response 前的 GetSystemCycle()
+```
+
+Host 侧同时记录：
+
+```text
+H1: Host 写 request 前的 HostNowNs()
+H4: Host 看到 response 后的 HostNowNs()
+```
+
+每个样本用中点近似建立两个时钟的映射：
+
+```text
+Dmid = (D2 + D3) / 2
+Hmid = (H1 + H4) / 2
+
+Hmid ~= scale * Dmid + offset
+```
+
+程序使用所有成功样本做线性拟合，并输出：
+
+```text
+clock_valid
+clock_samples
+clock_scale_ns_per_cycle
+clock_offset_ns
+clock_residual_p50_us
+clock_residual_p99_us
+```
+
+其中 `clock_residual_*` 是拟合残差，不是 AIV->Host 时延。Roundtrip 假设 Host->AIV 和 AIV->Host 的路径延迟大致对称，因此它是工程上的近似校准；如果需要严格无偏的单向硬件时延，需要平台提供 Host/AIV 同步时钟或硬件时间戳。
+
+建议先跑 roundtrip 校准：
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_aiv_roundtrip \
+  --events=256 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000 \
+  --aiv-poll-limit=1000000
+```
+
+要求：
+
+```text
+status=0
+final_req == final_ack == events
+clock_valid=1
+clock_samples 接近 events
+clock_residual_p99_us 不出现异常大的离群值
+```
+
+`events=1` 可以验证通信路径，但不能拟合时钟斜率；做校准时至少使用几十个 event，推荐 256 或 1024。
+
+新增的 `aiv_host_paced_timestamp` 会在一次运行内部自动执行两阶段：
+
+```text
+阶段一：用 calibration-events 个 event 执行 host_aiv_roundtrip，拟合 scale/offset
+阶段二：AIV 按 delay-iters 间隔写包含 timestamp 和 flag 的 64B record，Host CPU 轮询 ready 字段
+```
+
+每个 event 使用一个独立的 64B record，timestamp 和 flag 在同一次 AIV `DataCopy` 中写入：
+
+```text
+record[event] word 0/1: device cycle
+record[event] word 2:   sequence
+record[event] word 3:   ready flag
+```
+
+AIV 在发起这次 64B 写入前读取 device cycle，并把 ready flag 作为 record 的完成字段。Host 只有看到 ready flag 后，才读取时间戳并计算。这样测试插桩不会额外增加第二次 Host DRAM 写入；该模式测的是一次 64B instrumented flag record 的可见性。
+
+```text
+t1_host = scale * device_cycle + offset
+latency = HostNowNs() - t1_host
+```
+
+这个 latency 的准确含义是：
+
+```text
+AIV 开始发起 Host DRAM 写入
+    -> Host CPU 观察到对应 flag
+```
+
+它包含 mapped Host memory 的可见性、缓存一致性和 Host polling 发现延迟，适合作为 pipeline 同步开销指标；不是单独的 DRAM 物理传播时间。
+
+最小测试：
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=aiv_host_paced_timestamp \
+  --events=256 \
+  --calibration-events=256 \
+  --delay-iters=4096 \
+  --warmup=2 \
+  --iters=10 \
+  --timeout-ms=5000
+```
+
+推荐先做 delay sweep：
+
+```bash
+for d in 256 1024 4096 16384; do
+  ./build-a5/aiv_hostcpu_bench \
+    --device=0 \
+    --mode=aiv_host_paced_timestamp \
+    --events=256 \
+    --calibration-events=256 \
+    --delay-iters=${d} \
+    --warmup=2 \
+    --iters=10 \
+    --timeout-ms=5000
+done
+```
+
+重点看：
+
+```text
+latency_avg_us / latency_p50_us / latency_p99_us
+  AIV->Host 单向观测时延，建议以 p50/p99 为主要结果。
+
+latency_min_us / latency_max_us
+  用来发现异常值，不建议只拿 min 作为结论。
+
+calibration_min_rtt_us
+  本轮时钟校准中观测到的最小 Host roundtrip。
+
+calibration_residual_p50_us / calibration_residual_p99_us
+  时钟拟合误差；如果明显大于 latency 本身，说明校准结果不可靠。
+
+one_poll_count
+  Host 第一次读取对应 flag 就看到新值的 event 数。delay 太小时该值可能接近 events，
+  表示 Host 仍然会批量扫到已经完成的 flag；此时增大 delay-iters。
+
+timestamp_errors
+  timestamp record 中的 sequence 与 flag 不匹配时增加，正常应为 0。
+```
+
+注意：`aiv_host_paced_timestamp` 的 `host_total_us` 包含前面的 roundtrip 校准阶段，不要用它代表单向时延；单向时延应看 `latency_*_us`。当前在线轮询路径不在每次 load 时调用 `aclrtMemInvalidate`，这样测到的是正常 coherent mapped Host DRAM 路径；如果平台必须显式 invalidate，应单独增加对照实验，否则 invalidate 开销会混入主结果。
 
 `host_aiv_roundtrip_fast` 是更瘦的 roundtrip 版本。它的热路径是：
 
