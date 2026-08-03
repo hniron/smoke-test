@@ -666,3 +666,68 @@ residual_us ~= flag_latency_seen_interval_avg_us(D) - delay_extra_per_event_us(D
 ```
 
 其中 `--invalidate-before-read=1` 只影响 `host_poll_postcheck` 的最终检查，不解决 `host_poll_plain` 在线轮询中的非一致性 cache 问题。在线轮询成立的前提仍然是 mapped host memory 对 Host CPU 读侧具备正确可见性。
+
+## Host payload smoke test: AIV -> host DRAM
+
+The `host_payload_poll` mode validates the next step needed by the DSA pipeline:
+
+```text
+AIV writes 2048 int32 token IDs to mapped host DRAM
+    -> AIV writes the per-batch ready flag
+    -> Host CPU polls the flag
+    -> Host CPU validates all 2048 token IDs
+```
+
+The payload buffer is allocated with `aclrtMallocHost`, registered with
+`aclrtHostRegister(..., ACL_HOST_REGISTER_MAPPED, &payloadDev)`, and accessed by
+the AIV kernel through `payloadDev`. The host poller reads `payloadHost` only
+after observing the corresponding ready flag. Each batch uses a distinct
+pattern, so stale, partial, or cross-batch data is detected.
+
+Build on an A5 host:
+
+```bash
+cd /home/allen/workdir/zhn/aiv_hostcpu_bench
+source /usr/local/Ascend/cann-9.1.T560/set_env.sh
+rm -rf build-a5
+cmake -S . -B build-a5 \
+  -DCANN_INSTALL_PATH=/usr/local/Ascend/cann-9.1.T560 \
+  -DNPU_ARCH=dav-3510 \
+  -DASC_ARCH_FLAG=--npu-arch
+cmake --build build-a5 -j
+```
+
+Run the minimum test:
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_payload_poll \
+  --tasks=4 \
+  --warmup=1 \
+  --iters=5 \
+  --timeout-ms=5000
+```
+
+Recommended stress run:
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_payload_poll \
+  --tasks=24 \
+  --warmup=2 \
+  --iters=20 \
+  --timeout-ms=5000
+```
+
+Expected result for every iteration:
+
+```text
+host_payload_poll status=0 ... payload_errors=0 ... first_flag=1 last_flag=24
+```
+
+`status=0` and `payload_errors=0` mean that every observed ready flag was
+followed by a complete and correct 2048-element payload. `status=2` means the
+host poll timed out. `status=4` means the flag was observed but at least one
+payload element did not match the expected batch pattern.
