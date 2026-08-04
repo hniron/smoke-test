@@ -172,6 +172,7 @@ target_link_libraries(aiv_hostcpu_bench PRIVATE
     register
     platform
     ascendalog
+    unified_dlog
     m
     dl
     Threads::Threads
