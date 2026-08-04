@@ -24,14 +24,17 @@ project(aiv_hostcpu_bench LANGUAGES ASC CXX)
 
 find_package(Threads REQUIRED)
 
-# CANN's AscendC host configuration needs the logical SoC name in addition
-# to the compiler architecture.  A5/dav-3510 is Ascend950 by default; keep
-# this as a cache variable so an installation with a different reported SoC
-# can override it with -DSOC_VERSION=....
-set(SOC_VERSION "Ascend950" CACHE STRING
-    "Ascend SoC version, for example Ascend950 for A5/dav-3510")
+# CANN's AscendC host configuration needs the exact logical SoC name in
+# addition to the compiler architecture.  dav-3510 identifies the ISA but
+# does not identify the 950DT product suffix, so require the value explicitly
+# instead of guessing one of the 950DT variants.
+set(SOC_VERSION "" CACHE STRING
+    "Exact Ascend SoC version, for example ascend950dt_95a1")
 if(SOC_VERSION STREQUAL "")
-    message(FATAL_ERROR "SOC_VERSION must be set, for example -DSOC_VERSION=Ascend950")
+    message(FATAL_ERROR
+        "SOC_VERSION must be set to the exact supported SoC variant, "
+        "for example -DSOC_VERSION=ascend950dt_95a1. "
+        "Use npu-smi info -t board -i 0 -c 0 to identify the device.")
 endif()
 
 # The ASC language compiler emits a host launcher into every .asc object.
