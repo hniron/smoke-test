@@ -158,14 +158,21 @@ target_link_directories(aiv_hostcpu_bench PRIVATE
 
 target_link_libraries(aiv_hostcpu_bench PRIVATE
     host_intf_pub
+    ascendc_runtime
     ascendcl
     acl_op_compiler
     ${ASCEND_HOST_LAUNCH_LIBS}
+    mmpa
+    ascend_dump
+    error_manager
+    c_sec
+    nnopbase
     graph_base
     tiling_api
     register
     platform
     ascendalog
+    m
     dl
     Threads::Threads
 )
