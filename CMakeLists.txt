@@ -24,6 +24,39 @@ project(aiv_hostcpu_bench LANGUAGES ASC CXX)
 
 find_package(Threads REQUIRED)
 
+# The ASC language compiler emits a host launcher into every .asc object.
+# Its support target is an INTERFACE CMake target named host_intf_pub; it is
+# not a libhost_intf_pub.so/.a file.  Load the official AscendC CMake module
+# so that this target and its include/link options are available below.
+if(NOT DEFINED ASCEND_CANN_PACKAGE_PATH OR ASCEND_CANN_PACKAGE_PATH STREQUAL "")
+    set(ASCEND_CANN_PACKAGE_PATH "${CANN_INSTALL_PATH}")
+endif()
+
+set(ASCENDC_CMAKE_DIR "")
+foreach(_ascendc_cmake_root IN ITEMS
+    "${ASCEND_CANN_PACKAGE_PATH}/compiler/tikcpp/ascendc_kernel_cmake"
+    "${ASCEND_CANN_PACKAGE_PATH}/tools/tikcpp/ascendc_kernel_cmake"
+    "${ASCEND_CANN_PACKAGE_PATH}/aarch64-linux/tikcpp/ascendc_kernel_cmake")
+    if(EXISTS "${_ascendc_cmake_root}/ascendc.cmake")
+        set(ASCENDC_CMAKE_DIR "${_ascendc_cmake_root}")
+        break()
+    endif()
+endforeach()
+
+if(ASCENDC_CMAKE_DIR STREQUAL "")
+    message(FATAL_ERROR
+        "Cannot find ascendc.cmake under ${ASCEND_CANN_PACKAGE_PATH}. "
+        "The AscendC kernel CMake package is required to link .asc host launchers.")
+endif()
+
+include("${ASCENDC_CMAKE_DIR}/ascendc.cmake")
+if(NOT TARGET host_intf_pub)
+    message(FATAL_ERROR
+        "${ASCENDC_CMAKE_DIR}/ascendc.cmake did not define host_intf_pub")
+endif()
+message(STATUS "Using AscendC CMake module: ${ASCENDC_CMAKE_DIR}/ascendc.cmake")
+message(STATUS "Using AscendC host interface target: host_intf_pub")
+
 set(HCOMM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hccl/hcomm" CACHE PATH
     "hcomm checkout containing the host CPU indexer_update implementation")
 set(HIXL_INDEXER_UPDATE_CPU_SOURCE
@@ -111,9 +144,16 @@ target_link_directories(aiv_hostcpu_bench PRIVATE
 )
 
 target_link_libraries(aiv_hostcpu_bench PRIVATE
+    host_intf_pub
     ascendcl
     acl_op_compiler
     ${ASCEND_HOST_LAUNCH_LIBS}
+    graph_base
+    tiling_api
+    register
+    platform
+    ascendalog
+    dl
     Threads::Threads
 )
 
