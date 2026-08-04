@@ -863,6 +863,32 @@ Run the minimum test:
   --timeout-ms=5000
 ```
 
+## 将测试日志整理为 Excel
+
+`log_to_excel.py` 可以把 `aiv_hostcpu_bench` 的文本日志整理成老师可以直接查看的 Excel 报告：
+
+```text
+老师摘要：按 delay_iters 汇总 P50/P99、有效轮数、负时延和异常提示
+每轮结果：每个 iter 的原始指标
+字段说明：每个字段的含义、单位和解读方法
+原始日志：保留原始行以及修复终端换行后的文本，便于追溯
+```
+
+运行方法：
+
+```bash
+python3 log_to_excel.py /path/to/log.txt \
+  --output aiv_hostcpu_latency_summary.xlsx
+```
+
+当前脚本默认使用 `openpyxl` 生成 `.xlsx`，如果环境缺少该依赖：
+
+```bash
+python3 -m pip install openpyxl
+```
+
+报告中建议优先看 `老师摘要`：当前日志中 delay=256/1024/4096 的有效样本显示，典型单向观测时延约为 1 μs 量级；delay=16384 出现负时延，应先改善时钟校准稳定性后再作为结论。
+
 Recommended stress run:
 
 ```bash
@@ -885,3 +911,89 @@ host_payload_poll status=0 ... payload_errors=0 ... first_flag=1 last_flag=24
 followed by a complete and correct 2048-element payload. `status=2` means the
 host poll timed out. `status=4` means the flag was observed but at least one
 payload element did not match the expected batch pattern.
+
+## Host CPU indexer_update integration test
+
+The `host_indexer_update` mode adds the first end-to-end bring-up for the
+CPU-host version of `indexer_update`:
+
+```text
+AIV test kernel writes 2048 legal token IDs [0, 2047]
+    -> mapped Host pinned DRAM payload
+    -> AIV writes the per-batch ready flag
+    -> HixlIndexerUpdateCpu polls the ready flags
+    -> Host CPU classifies hits/misses and updates cached_token_slots
+    -> Host CPU publishes per-batch done_flags
+```
+
+This is intentionally a simulated AIV producer, not the real
+`lightning_indexer` output. It isolates the Host DRAM visibility and CPU
+`indexer_update` consumer before the real lightning_indexer is connected.
+
+The test initializes, for every batch:
+
+```text
+topk token IDs:       0 .. 2047
+cached hits:          token 0 .. 1023
+reusable cache rows:  token 2048 .. 3071
+expected misses:      token 1024 .. 2047
+```
+
+Therefore each batch is expected to report 1024 hits, 1024 misses, and 1024
+evictions. The test also checks the updated cache rows and every CPU done flag.
+
+The smoke-test executable links the single host implementation from the
+hcomm checkout. Configure with `HCOMM_ROOT` if the default sibling path does
+not apply:
+
+```bash
+cmake -S . -B build-a5 \
+  -DCANN_INSTALL_PATH="$ASCEND_HOME_PATH" \
+  -DHCOMM_ROOT="$PWD/../hccl/hcomm"
+cmake --build build-a5 -j
+```
+
+Run the minimum A5 test:
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_indexer_update \
+  --tasks=4 \
+  --seq-len=65536 \
+  --warmup=1 \
+  --iters=5 \
+  --timeout-ms=5000
+```
+
+Recommended stress test:
+
+```bash
+./build-a5/aiv_hostcpu_bench \
+  --device=0 \
+  --mode=host_indexer_update \
+  --tasks=24 \
+  --seq-len=65536 \
+  --warmup=2 \
+  --iters=20 \
+  --timeout-ms=5000
+```
+
+Expected result for every measured iteration is similar to:
+
+```text
+host_indexer_update status=0 cpu_status=0 ... \
+payload_errors=0 output_errors=0 done_errors=0 \
+hit_total=4096 miss_total=4096 first_flag=1 last_flag=4
+```
+
+For `tasks=24`, the expected totals are `hit_total=24576` and
+`miss_total=24576`. `cpu_update_us` includes the CPU-side ready-flag wait and
+the Host CPU index update. `host_total_us` additionally includes the AIV
+launch and final stream synchronization. Neither value is the pure
+`lightning_indexer` latency.
+
+This mode does not modify the existing AICPU `HixlIndexerUpdate` path or any
+NPU graph. After it passes, replace only the simulated AIV producer with the
+real lightning_indexer output and keep the Host CPU consumer and flag protocol
+unchanged for the next integration step.

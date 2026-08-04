@@ -22,6 +22,17 @@ endif()
 find_package(ASC REQUIRED)
 project(aiv_hostcpu_bench LANGUAGES ASC CXX)
 
+find_package(Threads REQUIRED)
+
+set(HCOMM_ROOT "${CMAKE_CURRENT_LIST_DIR}/../hccl/hcomm" CACHE PATH
+    "hcomm checkout containing the host CPU indexer_update implementation")
+set(HIXL_INDEXER_UPDATE_CPU_SOURCE
+    "${HCOMM_ROOT}/src/framework/device/dsa_offload/host/hixl_indexer_update_cpu.cc")
+if(NOT EXISTS "${HIXL_INDEXER_UPDATE_CPU_SOURCE}")
+    message(FATAL_ERROR
+        "Cannot find hixl_indexer_update_cpu.cc. Set HCOMM_ROOT to the hcomm checkout.")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -85,11 +96,14 @@ endforeach()
 
 add_executable(aiv_hostcpu_bench
     bench_main.asc
+    ${HIXL_INDEXER_UPDATE_CPU_SOURCE}
 )
 
 target_include_directories(aiv_hostcpu_bench PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CANN_INCLUDE_DIRS}
+    "${HCOMM_ROOT}/src/framework/device/dsa_offload/include"
+    "${HCOMM_ROOT}/src/framework/device/dsa_offload/host"
 )
 
 target_link_directories(aiv_hostcpu_bench PRIVATE
@@ -100,6 +114,7 @@ target_link_libraries(aiv_hostcpu_bench PRIVATE
     ascendcl
     acl_op_compiler
     ${ASCEND_HOST_LAUNCH_LIBS}
+    Threads::Threads
 )
 
 target_compile_options(aiv_hostcpu_bench PRIVATE
