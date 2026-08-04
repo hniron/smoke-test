@@ -24,6 +24,16 @@ project(aiv_hostcpu_bench LANGUAGES ASC CXX)
 
 find_package(Threads REQUIRED)
 
+# CANN's AscendC host configuration needs the logical SoC name in addition
+# to the compiler architecture.  A5/dav-3510 is Ascend950 by default; keep
+# this as a cache variable so an installation with a different reported SoC
+# can override it with -DSOC_VERSION=....
+set(SOC_VERSION "Ascend950" CACHE STRING
+    "Ascend SoC version, for example Ascend950 for A5/dav-3510")
+if(SOC_VERSION STREQUAL "")
+    message(FATAL_ERROR "SOC_VERSION must be set, for example -DSOC_VERSION=Ascend950")
+endif()
+
 # The ASC language compiler emits a host launcher into every .asc object.
 # Its support target is an INTERFACE CMake target named host_intf_pub; it is
 # not a libhost_intf_pub.so/.a file.  Load the official AscendC CMake module
